@@ -997,9 +997,6 @@ function createMockCpuResult(
   const singleRatio = 0.91;
   const multiRatio = 0.96;
   const sustainedRatio = 0.86;
-  const singleCoreScore = Math.round(singleRatio * 5000);
-  const multiCoreScore = Math.round(multiRatio * 5000);
-  const sustainedScore = Math.round(sustainedRatio * 5000);
   const startedAt = Date.now();
   const totalDurationMs =
     config.warmupDurationMs +
@@ -1061,46 +1058,51 @@ function createMockCpuResult(
 
   const subScores: CpuBenchmarkSubScores = {
     singleCore:
-      runMode !== "multiCore"
-        ? {
+      runMode !== "multiCore" && singleCoreMetrics
+        ? calculateCpuAggregateSubScore({
             id: "singleCore",
             label: "Single-core",
-            score: singleCoreScore,
-            measuredValue: roundMetric(singleRatio * 100),
-            referenceValue: 100,
-            unit: "% of reference",
-            durationMs: config.singleCoreKernelDurationMs * CPU_KERNEL_ORDER.length,
-            workerCount: 1,
-            notes: "Mock single-core aggregate for smoke verification.",
-          }
+            kernels: CPU_KERNEL_ORDER.map((kernel) => ({
+              id: kernel,
+              throughput: singleCoreMetrics[kernel].throughput,
+              referenceThroughput: config.referenceThroughputs.singleCore[kernel],
+              durationMs: singleCoreMetrics[kernel].durationMs,
+              workerCount: 1,
+              notes: "Mock single-core aggregate for smoke verification.",
+            })),
+          })
         : null,
     multiCore:
-      runMode !== "singleCore"
-        ? {
+      runMode !== "singleCore" && multiCoreMetrics
+        ? calculateCpuAggregateSubScore({
             id: "multiCore",
             label: "Multi-core",
-            score: multiCoreScore,
-            measuredValue: roundMetric(multiRatio * 100),
-            referenceValue: 100,
-            unit: "% of reference",
-            durationMs: config.multiCoreKernelDurationMs * CPU_KERNEL_ORDER.length,
-            workerCount,
-            notes: "Mock multi-core aggregate for smoke verification.",
-          }
+            kernels: CPU_KERNEL_ORDER.map((kernel) => ({
+              id: kernel,
+              throughput: multiCoreMetrics[kernel].throughput,
+              referenceThroughput: config.referenceThroughputs.multiCore[kernel],
+              durationMs: multiCoreMetrics[kernel].durationMs,
+              workerCount,
+              notes: "Mock multi-core aggregate for smoke verification.",
+            })),
+          })
         : null,
     sustained:
-      runMode === "full"
-        ? {
+      runMode === "full" && sustainedMetric
+        ? calculateCpuAggregateSubScore({
             id: "sustained",
             label: "Sustained",
-            score: sustainedScore,
-            measuredValue: roundMetric(sustainedRatio * 100),
-            referenceValue: 100,
-            unit: "% of reference",
-            durationMs: config.sustainedDurationMs,
-            workerCount,
-            notes: "Mock sustained aggregate for smoke verification.",
-          }
+            kernels: [
+              {
+                id: "mixedBurn",
+                throughput: sustainedMetric.throughput,
+                referenceThroughput: config.referenceThroughputs.sustained,
+                durationMs: sustainedMetric.durationMs,
+                workerCount,
+                notes: "Mock sustained aggregate for smoke verification.",
+              },
+            ],
+          })
         : null,
   };
   const { cpuScore, rating } = calculateCpuScore({ runMode, subScores });

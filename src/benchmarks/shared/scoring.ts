@@ -2,6 +2,14 @@ import { RESULT_RATING_BANDS } from "@/lib/branding";
 
 export const MIN_BENCHMARK_SCORE = 150;
 export const MAX_BENCHMARK_SCORE = 50_000;
+export type RatingBand = { min: number; label: string };
+export type ScoreCurveConfig = {
+  anchorScore: number;
+  anchorRatio: number;
+  exponent: number;
+  minScore?: number;
+  maxScore?: number;
+};
 
 export function roundMetric(value: number, precision = 2) {
   if (!Number.isFinite(value)) {
@@ -35,19 +43,26 @@ export function weightedGeometricMean(
   return Math.exp(weightedLogSum / totalWeight);
 }
 
-export function scoreFromRatio(ratio: number, anchorScore = 5000) {
-  const rawScore = Math.round(anchorScore * Math.max(ratio, 0.05));
+export function scoreFromRatio(ratio: number, curve: ScoreCurveConfig) {
+  const safeRatio = Math.max(ratio, 0.05);
+  const normalizedRatio = safeRatio / Math.max(curve.anchorRatio, 0.05);
+  const rawScore = Math.round(
+    curve.anchorScore * Math.pow(normalizedRatio, curve.exponent),
+  );
 
   return Math.min(
-    MAX_BENCHMARK_SCORE,
-    Math.max(MIN_BENCHMARK_SCORE, rawScore),
+    curve.maxScore ?? MAX_BENCHMARK_SCORE,
+    Math.max(curve.minScore ?? MIN_BENCHMARK_SCORE, rawScore),
   );
 }
 
-export function getRatingForScore(score: number) {
+export function getRatingForScore(
+  score: number,
+  bands: readonly RatingBand[] = RESULT_RATING_BANDS,
+) {
   const match =
-    RESULT_RATING_BANDS.find((band) => score >= band.min) ??
-    RESULT_RATING_BANDS[RESULT_RATING_BANDS.length - 1];
+    bands.find((band) => score >= band.min) ??
+    bands[bands.length - 1];
 
   return match.label;
 }

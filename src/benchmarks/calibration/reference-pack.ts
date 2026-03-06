@@ -1,20 +1,20 @@
 export const CALIBRATION_REFERENCE_PACK = {
   cpu: {
-    targetHeadlineBand: [4200, 5000] as const,
-    anchorPercentile: "95th percentile of current premium laptops",
+    targetHeadlineBand: [850, 1100] as const,
+    anchorPercentile: "current upper-consumer flagship CPU band",
     sampleSegments: [
-      "Apple M4 Pro / M4 Max laptops",
-      "Intel Core Ultra 9 premium creator laptops",
-      "AMD Ryzen AI 9 / HX-class premium laptops",
+      "Intel Core Ultra 9 285K / creator-class desktops",
+      "AMD Ryzen 9 9950HX3D / 9950X3D class flagships",
+      "Apple M5 Max / M3 Ultra class top-tier Apple silicon",
     ],
   },
   gpu: {
-    targetHeadlineBand: [4200, 5000] as const,
-    anchorPercentile: "95th percentile of current premium laptop GPUs",
+    targetHeadlineBand: [2600, 3200] as const,
+    anchorPercentile: "current upper-consumer flagship GPU band",
     sampleSegments: [
-      "Apple integrated pro/max laptop GPUs",
-      "RTX 4070 / 4080 class laptop GPUs",
-      "Radeon 890M / creator-class integrated GPUs",
+      "NVIDIA RTX 5090 class top-end consumer GPUs",
+      "Apple top-bin Max / Ultra integrated GPUs",
+      "Creator-class desktop and premium mobile GPUs",
     ],
   },
 } as const;

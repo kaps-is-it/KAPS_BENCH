@@ -4,6 +4,7 @@ import type {
   GpuGraphicsKernelId,
 } from "@/lib/types";
 import { resolveBenchmarkPreset } from "@/benchmarks/shared/preset";
+import type { RatingBand, ScoreCurveConfig } from "@/benchmarks/shared/scoring";
 
 export const GPU_GRAPHICS_LABELS: Record<GpuGraphicsKernelId, string> = {
   rasterScene: "Raster scene",
@@ -38,6 +39,20 @@ export const GPU_AGGREGATE_WEIGHTS = {
   compute: 0.4,
   sustained: 0.15,
 } as const;
+
+export const GPU_SCORE_CURVE: ScoreCurveConfig = {
+  anchorScore: 3000,
+  anchorRatio: 10,
+  exponent: 0.82,
+};
+
+export const GPU_RATING_BANDS: readonly RatingBand[] = [
+  { min: 3000, label: "Flagship" },
+  { min: 2400, label: "High-End" },
+  { min: 1700, label: "Performance" },
+  { min: 1000, label: "Capable" },
+  { min: 0, label: "Entry" },
+] as const;
 
 type GpuPresetConfig = {
   name: "full" | "smoke";

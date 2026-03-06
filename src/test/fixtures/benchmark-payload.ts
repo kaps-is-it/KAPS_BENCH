@@ -57,17 +57,17 @@ export function createCpuResultFixture(): CpuBenchmarkResult {
   return {
     benchmarkKind: "cpu",
     cpuRunMode: "full",
-    headlineScore: 4720,
-    cpuScore: 4720,
+    headlineScore: 980,
+    cpuScore: 980,
     rating: "High-End",
-    singleCoreScore: 4510,
-    multiCoreScore: 4880,
-    sustainedScore: 4380,
+    singleCoreScore: 930,
+    multiCoreScore: 1015,
+    sustainedScore: 890,
     subScores: {
       singleCore: {
         id: "singleCore",
         label: "Single-core",
-        score: 4510,
+        score: 930,
         measuredValue: 90.2,
         referenceValue: 100,
         unit: "% of reference",
@@ -78,7 +78,7 @@ export function createCpuResultFixture(): CpuBenchmarkResult {
       multiCore: {
         id: "multiCore",
         label: "Multi-core",
-        score: 4880,
+        score: 1015,
         measuredValue: 97.6,
         referenceValue: 100,
         unit: "% of reference",
@@ -89,7 +89,7 @@ export function createCpuResultFixture(): CpuBenchmarkResult {
       sustained: {
         id: "sustained",
         label: "Sustained",
-        score: 4380,
+        score: 890,
         measuredValue: 87.6,
         referenceValue: 100,
         unit: "% of reference",
@@ -316,17 +316,17 @@ export function createCpuResultFixture(): CpuBenchmarkResult {
 export function createGpuResultFixture(): GpuBenchmarkResult {
   return {
     benchmarkKind: "gpu",
-    headlineScore: 4630,
-    gpuScore: 4630,
+    headlineScore: 2910,
+    gpuScore: 2910,
     rating: "High-End",
-    graphicsScore: 4700,
-    computeScore: 4520,
-    sustainedScore: 4380,
+    graphicsScore: 3020,
+    computeScore: 2860,
+    sustainedScore: 2710,
     subScores: {
       graphics: {
         id: "graphics",
         label: "Graphics",
-        score: 4700,
+        score: 3020,
         measuredValue: 94,
         referenceValue: 100,
         unit: "% of reference",
@@ -336,7 +336,7 @@ export function createGpuResultFixture(): GpuBenchmarkResult {
       compute: {
         id: "compute",
         label: "Compute",
-        score: 4520,
+        score: 2860,
         measuredValue: 90.4,
         referenceValue: 100,
         unit: "% of reference",
@@ -346,7 +346,7 @@ export function createGpuResultFixture(): GpuBenchmarkResult {
       sustained: {
         id: "sustained",
         label: "Sustained",
-        score: 4380,
+        score: 2710,
         measuredValue: 87.6,
         referenceValue: 100,
         unit: "% of reference",

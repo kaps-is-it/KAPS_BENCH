@@ -24,7 +24,7 @@ export const BENCHMARK_CARD_CONTENT: Record<
     bullets: [
       "Integer, compression, matrix, image, memory, WASM, and raymarch kernels",
       "One full run with thermal-pressure scoring",
-      "Calibrated to keep current flagship laptops around 5,000 points",
+      "Calibrated to keep current flagship CPUs around 1,000 points",
     ],
   },
   gpu: {
@@ -42,9 +42,9 @@ export const BENCHMARK_CARD_CONTENT: Record<
 };
 
 export const RESULT_RATING_BANDS = [
-  { min: 5000, label: "Flagship" },
-  { min: 4200, label: "High-End" },
-  { min: 3000, label: "Performance" },
-  { min: 1800, label: "Capable" },
+  { min: 1000, label: "Flagship" },
+  { min: 800, label: "High-End" },
+  { min: 600, label: "Performance" },
+  { min: 350, label: "Capable" },
   { min: 0, label: "Entry" },
 ] as const;

@@ -4,14 +4,14 @@ import {
 } from "@/benchmarks/cpu/scoring";
 
 describe("cpu scoring", () => {
-  it("produces a positive aggregate score from throughput ratios", () => {
+  it("places a high-end cpu band around the 1000-point anchor", () => {
     const singleCore = calculateCpuAggregateSubScore({
       id: "singleCore",
       label: "Single-core",
       kernels: [
         {
           id: "integerBranchHash",
-          throughput: 8_100_000,
+          throughput: 8_100_000 * 12,
           referenceThroughput: 8_100_000,
           durationMs: 24_000,
           workerCount: 1,
@@ -19,7 +19,7 @@ describe("cpu scoring", () => {
         },
         {
           id: "matrix",
-          throughput: 420_000,
+          throughput: 420_000 * 12,
           referenceThroughput: 420_000,
           durationMs: 24_000,
           workerCount: 1,
@@ -27,18 +27,42 @@ describe("cpu scoring", () => {
         },
       ],
     });
-    const multiCore = {
-      ...singleCore,
-      id: "multiCore" as const,
+    const multiCore = calculateCpuAggregateSubScore({
+      id: "multiCore",
       label: "Multi-core",
-      score: 5200,
-    };
-    const sustained = {
-      ...singleCore,
-      id: "sustained" as const,
+      kernels: [
+        {
+          id: "integerBranchHash",
+          throughput: 61_000_000 * 12,
+          referenceThroughput: 61_000_000,
+          durationMs: 24_000,
+          workerCount: 16,
+          notes: "reference",
+        },
+        {
+          id: "matrix",
+          throughput: 3_200_000 * 12,
+          referenceThroughput: 3_200_000,
+          durationMs: 24_000,
+          workerCount: 16,
+          notes: "reference",
+        },
+      ],
+    });
+    const sustained = calculateCpuAggregateSubScore({
+      id: "sustained",
       label: "Sustained",
-      score: 4500,
-    };
+      kernels: [
+        {
+          id: "mixedBurn",
+          throughput: 8_400_000 * 12,
+          referenceThroughput: 8_400_000,
+          durationMs: 60_000,
+          workerCount: 16,
+          notes: "reference",
+        },
+      ],
+    });
 
     const result = calculateCpuScore({
       runMode: "full",
@@ -49,8 +73,10 @@ describe("cpu scoring", () => {
       },
     });
 
-    expect(singleCore.score).toBeGreaterThan(1000);
-    expect(result.cpuScore).toBeGreaterThan(1000);
+    expect(singleCore.score).toBeGreaterThanOrEqual(950);
+    expect(singleCore.score).toBeLessThanOrEqual(1050);
+    expect(result.cpuScore).toBeGreaterThanOrEqual(950);
+    expect(result.cpuScore).toBeLessThanOrEqual(1050);
     expect(result.rating.length).toBeGreaterThan(0);
   });
 
@@ -61,7 +87,7 @@ describe("cpu scoring", () => {
       kernels: [
         {
           id: "integerBranchHash",
-          throughput: 7_700_000,
+          throughput: 8_100_000 * 12,
           referenceThroughput: 8_100_000,
           durationMs: 24_000,
           workerCount: 1,

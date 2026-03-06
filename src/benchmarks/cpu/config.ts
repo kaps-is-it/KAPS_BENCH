@@ -1,5 +1,6 @@
 import type { BenchmarkPreset, CpuKernelId } from "@/lib/types";
 import { resolveBenchmarkPreset } from "@/benchmarks/shared/preset";
+import type { RatingBand, ScoreCurveConfig } from "@/benchmarks/shared/scoring";
 
 export const CPU_SUITE_LABELS: Record<CpuKernelId, string> = {
   integerBranchHash: "Integer + branch + hash",
@@ -28,6 +29,20 @@ export const CPU_AGGREGATE_WEIGHTS = {
   multiCore: 0.5,
   sustained: 0.15,
 } as const;
+
+export const CPU_SCORE_CURVE: ScoreCurveConfig = {
+  anchorScore: 1000,
+  anchorRatio: 12,
+  exponent: 0.8,
+};
+
+export const CPU_RATING_BANDS: readonly RatingBand[] = [
+  { min: 1000, label: "Flagship" },
+  { min: 820, label: "High-End" },
+  { min: 620, label: "Performance" },
+  { min: 380, label: "Capable" },
+  { min: 0, label: "Entry" },
+] as const;
 
 type CpuPresetConfig = {
   name: "full" | "smoke";

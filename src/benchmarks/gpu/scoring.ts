@@ -8,6 +8,8 @@ import {
   GPU_AGGREGATE_WEIGHTS,
   GPU_COMPUTE_WEIGHTS,
   GPU_GRAPHICS_WEIGHTS,
+  GPU_RATING_BANDS,
+  GPU_SCORE_CURVE,
 } from "@/benchmarks/gpu/config";
 import {
   getRatingForScore,
@@ -42,7 +44,7 @@ export function calculateGpuAggregateSubScore(
             : GPU_COMPUTE_WEIGHTS[kernel.id as GpuComputeKernelId],
     })),
   );
-  const score = scoreFromRatio(ratio);
+  const score = scoreFromRatio(ratio, GPU_SCORE_CURVE);
   const durationMs = input.kernels.reduce((sum, kernel) => sum + kernel.durationMs, 0);
 
   return {
@@ -60,23 +62,23 @@ export function calculateGpuAggregateSubScore(
 export function calculateGpuScore(subScores: Record<GpuAggregateScoreId, BenchmarkSubScore>) {
   const ratio = weightedGeometricMean([
     {
-      ratio: subScores.graphics.score / 5000,
+      ratio: subScores.graphics.measuredValue / subScores.graphics.referenceValue,
       weight: GPU_AGGREGATE_WEIGHTS.graphics,
     },
     {
-      ratio: subScores.compute.score / 5000,
+      ratio: subScores.compute.measuredValue / subScores.compute.referenceValue,
       weight: GPU_AGGREGATE_WEIGHTS.compute,
     },
     {
-      ratio: subScores.sustained.score / 5000,
+      ratio: subScores.sustained.measuredValue / subScores.sustained.referenceValue,
       weight: GPU_AGGREGATE_WEIGHTS.sustained,
     },
   ]);
 
-  const gpuScore = scoreFromRatio(ratio);
+  const gpuScore = scoreFromRatio(ratio, GPU_SCORE_CURVE);
 
   return {
     gpuScore,
-    rating: getRatingForScore(gpuScore),
+    rating: getRatingForScore(gpuScore, GPU_RATING_BANDS),
   };
 }

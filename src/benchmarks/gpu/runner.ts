@@ -1220,57 +1220,171 @@ function createMockGpuResult(
   const graphicsRatio = 0.93;
   const computeRatio = 0.89;
   const sustainedRatio = 0.85;
-  const graphicsScore = Math.round(graphicsRatio * 5000);
-  const computeScore = Math.round(computeRatio * 5000);
-  const sustainedScore = Math.round(sustainedRatio * 5000);
-  const gpuScore = Math.round(
-    5000 *
-      Math.pow(
-        graphicsRatio ** 0.45 * computeRatio ** 0.4 * sustainedRatio ** 0.15,
-        1,
-      ),
+  const graphicsStageMetrics = {
+    rasterScene: createGpuKernelMetric(
+      "rasterScene",
+      GPU_GRAPHICS_LABELS.rasterScene,
+      {
+        throughput: preset.referenceThroughputs.graphics.rasterScene * graphicsRatio,
+        iterations: 3,
+        durationMs: preset.graphicsSceneDurationMs,
+        checksum: 1,
+        timestampQueryUsed: false,
+      },
+      "Mock raster batch.",
+    ),
+    shadingScene: createGpuKernelMetric(
+      "shadingScene",
+      GPU_GRAPHICS_LABELS.shadingScene,
+      {
+        throughput: preset.referenceThroughputs.graphics.shadingScene * graphicsRatio,
+        iterations: 3,
+        durationMs: preset.graphicsSceneDurationMs,
+        checksum: 2,
+        timestampQueryUsed: false,
+      },
+      "Mock shading batch.",
+    ),
+    instancingScene: createGpuKernelMetric(
+      "instancingScene",
+      GPU_GRAPHICS_LABELS.instancingScene,
+      {
+        throughput: preset.referenceThroughputs.graphics.instancingScene * graphicsRatio,
+        iterations: 3,
+        durationMs: preset.graphicsSceneDurationMs,
+        checksum: 3,
+        timestampQueryUsed: false,
+      },
+      "Mock instancing batch.",
+    ),
+    particleScene: createGpuKernelMetric(
+      "particleScene",
+      GPU_GRAPHICS_LABELS.particleScene,
+      {
+        throughput: preset.referenceThroughputs.graphics.particleScene * graphicsRatio,
+        iterations: 3,
+        durationMs: preset.graphicsSceneDurationMs,
+        checksum: 4,
+        timestampQueryUsed: false,
+      },
+      "Mock particle batch.",
+    ),
+    postProcessScene: createGpuKernelMetric(
+      "postProcessScene",
+      GPU_GRAPHICS_LABELS.postProcessScene,
+      {
+        throughput: preset.referenceThroughputs.graphics.postProcessScene * graphicsRatio,
+        iterations: 3,
+        durationMs: preset.graphicsSceneDurationMs,
+        checksum: 5,
+        timestampQueryUsed: false,
+      },
+      "Mock post-process batch.",
+    ),
+  } satisfies Record<GpuGraphicsKernelId, GpuKernelMetric>;
+  const computeStageMetrics = {
+    matrixCompute: createGpuKernelMetric(
+      "matrixCompute",
+      GPU_COMPUTE_LABELS.matrixCompute,
+      {
+        throughput: preset.referenceThroughputs.compute.matrixCompute * computeRatio,
+        iterations: 3,
+        durationMs: preset.computeSceneDurationMs,
+        checksum: 6,
+        timestampQueryUsed: false,
+      },
+      "Mock matrix compute batch.",
+    ),
+    convolutionCompute: createGpuKernelMetric(
+      "convolutionCompute",
+      GPU_COMPUTE_LABELS.convolutionCompute,
+      {
+        throughput:
+          preset.referenceThroughputs.compute.convolutionCompute * computeRatio,
+        iterations: 3,
+        durationMs: preset.computeSceneDurationMs,
+        checksum: 7,
+        timestampQueryUsed: false,
+      },
+      "Mock convolution batch.",
+    ),
+    simulationCompute: createGpuKernelMetric(
+      "simulationCompute",
+      GPU_COMPUTE_LABELS.simulationCompute,
+      {
+        throughput:
+          preset.referenceThroughputs.compute.simulationCompute * computeRatio,
+        iterations: 3,
+        durationMs: preset.computeSceneDurationMs,
+        checksum: 8,
+        timestampQueryUsed: false,
+      },
+      "Mock simulation batch.",
+    ),
+  } satisfies Record<GpuComputeKernelId, GpuKernelMetric>;
+  const sustainedStageMetric = createGpuKernelMetric(
+    "mixedLoad",
+    "Mixed sustained load",
+    {
+      throughput: preset.referenceThroughputs.sustained * sustainedRatio,
+      iterations: 4,
+      durationMs: preset.sustainedDurationMs,
+      checksum: 9,
+      timestampQueryUsed: false,
+    },
+    "Mock mixed load batch.",
   );
+  const subScores = {
+    graphics: calculateGpuAggregateSubScore({
+      id: "graphics",
+      label: "Graphics",
+      kernels: GRAPHICS_ORDER.map((kernel) => ({
+        id: kernel,
+        throughput: graphicsStageMetrics[kernel].throughput,
+        referenceThroughput: preset.referenceThroughputs.graphics[kernel],
+        durationMs: graphicsStageMetrics[kernel].durationMs,
+        notes: "Mock GPU graphics suite used for internal smoke testing only.",
+      })),
+    }),
+    compute: calculateGpuAggregateSubScore({
+      id: "compute",
+      label: "Compute",
+      kernels: COMPUTE_ORDER.map((kernel) => ({
+        id: kernel,
+        throughput: computeStageMetrics[kernel].throughput,
+        referenceThroughput: preset.referenceThroughputs.compute[kernel],
+        durationMs: computeStageMetrics[kernel].durationMs,
+        notes: "Mock GPU compute suite used for internal smoke testing only.",
+      })),
+    }),
+    sustained: calculateGpuAggregateSubScore({
+      id: "sustained",
+      label: "Sustained",
+      kernels: [
+        {
+          id: "mixedLoad",
+          throughput: sustainedStageMetric.throughput,
+          referenceThroughput: preset.referenceThroughputs.sustained,
+          durationMs: sustainedStageMetric.durationMs,
+          notes: "Mock sustained GPU load used for internal smoke testing only.",
+        },
+      ],
+    }),
+  } satisfies Record<GpuAggregateScoreId, ReturnType<typeof calculateGpuAggregateSubScore>>;
+  const { gpuScore, rating } = calculateGpuScore(subScores);
+  const graphicsScore = subScores.graphics.score;
+  const computeScore = subScores.compute.score;
+  const sustainedScore = subScores.sustained.score;
 
   return {
     benchmarkKind: "gpu",
     headlineScore: gpuScore,
     gpuScore,
-    rating: gpuScore >= 4200 ? "High-End" : "Performance",
+    rating,
     graphicsScore,
     computeScore,
     sustainedScore,
-    subScores: {
-      graphics: {
-        id: "graphics",
-        label: "Graphics",
-        score: graphicsScore,
-        measuredValue: roundMetric(graphicsRatio * 100),
-        referenceValue: 100,
-        unit: "% of reference",
-        durationMs: preset.graphicsSceneDurationMs * GRAPHICS_ORDER.length,
-        notes: "Mock GPU graphics suite used for internal smoke testing only.",
-      },
-      compute: {
-        id: "compute",
-        label: "Compute",
-        score: computeScore,
-        measuredValue: roundMetric(computeRatio * 100),
-        referenceValue: 100,
-        unit: "% of reference",
-        durationMs: preset.computeSceneDurationMs * COMPUTE_ORDER.length,
-        notes: "Mock GPU compute suite used for internal smoke testing only.",
-      },
-      sustained: {
-        id: "sustained",
-        label: "Sustained",
-        score: sustainedScore,
-        measuredValue: roundMetric(sustainedRatio * 100),
-        referenceValue: 100,
-        unit: "% of reference",
-        durationMs: preset.sustainedDurationMs,
-        notes: "Mock sustained GPU load used for internal smoke testing only.",
-      },
-    },
+    subScores,
     rawMetrics: {
       preset: preset.name,
       startedAt,
@@ -1286,121 +1400,10 @@ function createMockGpuResult(
       timestampQueryUsed: false,
       adapterName: "Mock WebGPU Adapter",
       stageMetrics: {
-        graphics: {
-          rasterScene: createGpuKernelMetric(
-            "rasterScene",
-            GPU_GRAPHICS_LABELS.rasterScene,
-            {
-              throughput: preset.referenceThroughputs.graphics.rasterScene * graphicsRatio,
-              iterations: 3,
-              durationMs: preset.graphicsSceneDurationMs,
-              checksum: 1,
-              timestampQueryUsed: false,
-            },
-            "Mock raster batch.",
-          ),
-          shadingScene: createGpuKernelMetric(
-            "shadingScene",
-            GPU_GRAPHICS_LABELS.shadingScene,
-            {
-              throughput: preset.referenceThroughputs.graphics.shadingScene * graphicsRatio,
-              iterations: 3,
-              durationMs: preset.graphicsSceneDurationMs,
-              checksum: 2,
-              timestampQueryUsed: false,
-            },
-            "Mock shading batch.",
-          ),
-          instancingScene: createGpuKernelMetric(
-            "instancingScene",
-            GPU_GRAPHICS_LABELS.instancingScene,
-            {
-              throughput: preset.referenceThroughputs.graphics.instancingScene * graphicsRatio,
-              iterations: 3,
-              durationMs: preset.graphicsSceneDurationMs,
-              checksum: 3,
-              timestampQueryUsed: false,
-            },
-            "Mock instancing batch.",
-          ),
-          particleScene: createGpuKernelMetric(
-            "particleScene",
-            GPU_GRAPHICS_LABELS.particleScene,
-            {
-              throughput: preset.referenceThroughputs.graphics.particleScene * graphicsRatio,
-              iterations: 3,
-              durationMs: preset.graphicsSceneDurationMs,
-              checksum: 4,
-              timestampQueryUsed: false,
-            },
-            "Mock particle batch.",
-          ),
-          postProcessScene: createGpuKernelMetric(
-            "postProcessScene",
-            GPU_GRAPHICS_LABELS.postProcessScene,
-            {
-              throughput: preset.referenceThroughputs.graphics.postProcessScene * graphicsRatio,
-              iterations: 3,
-              durationMs: preset.graphicsSceneDurationMs,
-              checksum: 5,
-              timestampQueryUsed: false,
-            },
-            "Mock post-process batch.",
-          ),
-        },
-        compute: {
-          matrixCompute: createGpuKernelMetric(
-            "matrixCompute",
-            GPU_COMPUTE_LABELS.matrixCompute,
-            {
-              throughput: preset.referenceThroughputs.compute.matrixCompute * computeRatio,
-              iterations: 3,
-              durationMs: preset.computeSceneDurationMs,
-              checksum: 6,
-              timestampQueryUsed: false,
-            },
-            "Mock matrix compute batch.",
-          ),
-          convolutionCompute: createGpuKernelMetric(
-            "convolutionCompute",
-            GPU_COMPUTE_LABELS.convolutionCompute,
-            {
-              throughput:
-                preset.referenceThroughputs.compute.convolutionCompute * computeRatio,
-              iterations: 3,
-              durationMs: preset.computeSceneDurationMs,
-              checksum: 7,
-              timestampQueryUsed: false,
-            },
-            "Mock convolution batch.",
-          ),
-          simulationCompute: createGpuKernelMetric(
-            "simulationCompute",
-            GPU_COMPUTE_LABELS.simulationCompute,
-            {
-              throughput:
-                preset.referenceThroughputs.compute.simulationCompute * computeRatio,
-              iterations: 3,
-              durationMs: preset.computeSceneDurationMs,
-              checksum: 8,
-              timestampQueryUsed: false,
-            },
-            "Mock simulation batch.",
-          ),
-        },
+        graphics: graphicsStageMetrics,
+        compute: computeStageMetrics,
         sustained: {
-          mixedLoad: createGpuKernelMetric(
-            "mixedLoad",
-            "Mixed sustained load",
-            {
-              throughput: preset.referenceThroughputs.sustained * sustainedRatio,
-              iterations: 4,
-              durationMs: preset.sustainedDurationMs,
-              checksum: 9,
-              timestampQueryUsed: false,
-            },
-            "Mock mixed load batch.",
-          ),
+          mixedLoad: sustainedStageMetric,
         },
       },
     },

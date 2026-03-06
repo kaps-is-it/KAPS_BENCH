@@ -5,7 +5,12 @@ import type {
   CpuKernelId,
   CpuRunMode,
 } from "@/lib/types";
-import { CPU_AGGREGATE_WEIGHTS, CPU_KERNEL_WEIGHTS } from "@/benchmarks/cpu/config";
+import {
+  CPU_AGGREGATE_WEIGHTS,
+  CPU_KERNEL_WEIGHTS,
+  CPU_RATING_BANDS,
+  CPU_SCORE_CURVE,
+} from "@/benchmarks/cpu/config";
 import {
   getRatingForScore,
   roundMetric,
@@ -36,7 +41,7 @@ export function calculateCpuAggregateSubScore(
         kernel.id === "mixedBurn" ? 1 : CPU_KERNEL_WEIGHTS[kernel.id as CpuKernelId],
     })),
   );
-  const score = scoreFromRatio(ratio);
+  const score = scoreFromRatio(ratio, CPU_SCORE_CURVE);
   const durationMs = input.kernels.reduce((sum, kernel) => sum + kernel.durationMs, 0);
   const workerCount = Math.max(...input.kernels.map((kernel) => kernel.workerCount));
 
@@ -69,7 +74,7 @@ export function calculateCpuScore({
 
     return {
       cpuScore: singleCore.score,
-      rating: getRatingForScore(singleCore.score),
+      rating: getRatingForScore(singleCore.score, CPU_RATING_BANDS),
     };
   }
 
@@ -82,7 +87,7 @@ export function calculateCpuScore({
 
     return {
       cpuScore: multiCore.score,
-      rating: getRatingForScore(multiCore.score),
+      rating: getRatingForScore(multiCore.score, CPU_RATING_BANDS),
     };
   }
 
@@ -92,23 +97,23 @@ export function calculateCpuScore({
 
   const ratio = weightedGeometricMean([
     {
-      ratio: subScores.singleCore.score / 5000,
+      ratio: subScores.singleCore.measuredValue / subScores.singleCore.referenceValue,
       weight: CPU_AGGREGATE_WEIGHTS.singleCore,
     },
     {
-      ratio: subScores.multiCore.score / 5000,
+      ratio: subScores.multiCore.measuredValue / subScores.multiCore.referenceValue,
       weight: CPU_AGGREGATE_WEIGHTS.multiCore,
     },
     {
-      ratio: subScores.sustained.score / 5000,
+      ratio: subScores.sustained.measuredValue / subScores.sustained.referenceValue,
       weight: CPU_AGGREGATE_WEIGHTS.sustained,
     },
   ]);
 
-  const cpuScore = scoreFromRatio(ratio);
+  const cpuScore = scoreFromRatio(ratio, CPU_SCORE_CURVE);
 
   return {
     cpuScore,
-    rating: getRatingForScore(cpuScore),
+    rating: getRatingForScore(cpuScore, CPU_RATING_BANDS),
   };
 }
