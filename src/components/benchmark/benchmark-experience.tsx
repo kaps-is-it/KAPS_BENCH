@@ -19,7 +19,6 @@ import {
   Settings2,
   ShieldAlert,
   Sparkles,
-  UserRound,
   Zap,
 } from "lucide-react";
 import { runCpuBenchmark } from "@/benchmarks/cpu/runner";
@@ -29,6 +28,12 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { submitBenchmarkResult } from "@/lib/api/benchmark-client";
+import type {
+  BenchmarkActivityEntry,
+  BenchmarkLiveScore,
+  BenchmarkProgressUpdate,
+  BenchmarkTelemetry,
+} from "@/benchmarks/shared/progress";
 import { getBenchmarkSupportState } from "@/lib/browser";
 import { formatApproxMemory } from "@/lib/format-memory";
 import { detectDeviceProfile } from "@/lib/hardware-detect";
@@ -158,6 +163,119 @@ function getPreviewScores(
   return [null, null, null] as const;
 }
 
+function createHistorySeed() {
+  return Array.from({ length: 28 }, () => 0);
+}
+
+function getDefaultLiveScores(
+  benchmarkKind: BenchmarkKind,
+  cpuRunMode: CpuRunMode,
+): BenchmarkLiveScore[] {
+  if (benchmarkKind === "cpu") {
+    if (cpuRunMode === "singleCore") {
+      return [
+        {
+          id: "singleCore",
+          label: "Single-core live",
+          score: null,
+          status: "pending",
+        },
+      ];
+    }
+
+    if (cpuRunMode === "multiCore") {
+      return [
+        {
+          id: "multiCore",
+          label: "Multi-core live",
+          score: null,
+          status: "pending",
+        },
+      ];
+    }
+
+    return [
+      {
+        id: "singleCore",
+        label: "Single-core live",
+        score: null,
+        status: "pending",
+      },
+      {
+        id: "multiCore",
+        label: "Multi-core live",
+        score: null,
+        status: "pending",
+      },
+      {
+        id: "sustained",
+        label: "Sustained live",
+        score: null,
+        status: "pending",
+      },
+    ];
+  }
+
+  return [
+    {
+      id: "graphics",
+      label: "Graphics live",
+      score: null,
+      status: "pending",
+    },
+    {
+      id: "compute",
+      label: "Compute live",
+      score: null,
+      status: "pending",
+    },
+    {
+      id: "sustained",
+      label: "Sustained live",
+      score: null,
+      status: "pending",
+    },
+  ];
+}
+
+function getPlaceholderActivity(
+  benchmarkKind: BenchmarkKind,
+): BenchmarkActivityEntry[] {
+  return benchmarkKind === "cpu"
+    ? [
+        {
+          id: "workers",
+          label: "Worker lanes",
+          detail: "Per-worker throughput appears here once the run starts.",
+          value: 0,
+          normalized: 0.12,
+        },
+        {
+          id: "kernels",
+          label: "Kernel stream",
+          detail: "The active CPU kernel and its iteration rate will stream live here.",
+          value: 0,
+          normalized: 0.12,
+        },
+      ]
+    : [
+        {
+          id: "render",
+          label: "Render queue",
+          detail: "Graphics or compute batches appear here once the GPU run begins.",
+          value: 0,
+          normalized: 0.12,
+        },
+        {
+          id: "dispatch",
+          label: "Dispatch mix",
+          detail: "The active scene or compute workload will stream live here.",
+          value: 0,
+          normalized: 0.12,
+        },
+      ];
+}
+
 export function BenchmarkExperience({
   benchmarkKind,
 }: {
@@ -173,7 +291,7 @@ export function BenchmarkExperience({
     preset === "smoke" &&
     ((benchmarkKind === "cpu" && mockCpu) || (benchmarkKind === "gpu" && mockGpu));
   const copy = BENCHMARK_COPY[benchmarkKind];
-  const { accessToken, authEnabled, user } = useAuthSession();
+  const { accessToken } = useAuthSession();
   const {
     currentLabel,
     currentMessage,
@@ -193,6 +311,10 @@ export function BenchmarkExperience({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [selectedCpuRunMode, setSelectedCpuRunMode] = useState<CpuRunMode>("full");
   const [submissionWarning, setSubmissionWarning] = useState<string | null>(null);
+  const [liveTelemetry, setLiveTelemetry] = useState<BenchmarkTelemetry | null>(null);
+  const [activityHistory, setActivityHistory] = useState<number[]>(() =>
+    createHistorySeed(),
+  );
 
   function getSupport(profileCapabilities: CapabilityFlags) {
     if (isMockRun) {
@@ -215,23 +337,49 @@ export function BenchmarkExperience({
   const memorySummary = formatApproxMemory(deviceProfile?.deviceMemoryGb);
   const previewCards = getPreviewCards(benchmarkKind);
   const previewScores = getPreviewScores(benchmarkKind, result);
+  const liveScores =
+    liveTelemetry?.liveScores ?? getDefaultLiveScores(benchmarkKind, selectedCpuRunMode);
+  const liveActivity =
+    liveTelemetry?.activity.length
+      ? liveTelemetry.activity
+      : getPlaceholderActivity(benchmarkKind);
   const hasLocalOnlyResult =
     runState === "completed" &&
     Boolean(submissionWarning) &&
     result?.benchmarkKind === benchmarkKind;
   const cpuModeDuration =
     selectedCpuRunMode === "full" ? copy.duration : "3-5 minutes";
-  const visibleStages =
-    benchmarkKind === "cpu"
-      ? selectedCpuRunMode === "singleCore"
-        ? ["Warmup", "Single-core kernel sweep"]
-        : selectedCpuRunMode === "multiCore"
-          ? ["Warmup", "Multi-core worker sweep"]
-          : copy.stages
-      : copy.stages;
+
+  function resetLiveSurface() {
+    setLiveTelemetry(null);
+    setActivityHistory(createHistorySeed());
+  }
+
+  function handleProgressUpdate(update: BenchmarkProgressUpdate) {
+    setProgress(update.progress, update.label, update.message);
+
+    if (!update.telemetry) {
+      return;
+    }
+
+    setLiveTelemetry(update.telemetry);
+    const activityLevel =
+      update.telemetry.activity.length > 0
+        ? update.telemetry.activity.reduce(
+            (sum, entry) => sum + entry.normalized,
+            0,
+          ) / update.telemetry.activity.length
+        : 0;
+
+    setActivityHistory((previous) => [
+      ...previous.slice(-(createHistorySeed().length - 1)),
+      activityLevel,
+    ]);
+  }
 
   async function profileDevice() {
     try {
+      resetLiveSurface();
       setRunState("detecting");
       setProgress(8, "Device detection", "Collecting browser hardware signals.");
 
@@ -277,6 +425,7 @@ export function BenchmarkExperience({
         setSelectedCpuRunMode(cpuRunMode);
       }
 
+      resetLiveSurface();
       setError(null);
       setSubmissionWarning(null);
       setResult(null);
@@ -289,15 +438,15 @@ export function BenchmarkExperience({
               preset,
               mock: isMockRun,
               runMode: cpuRunMode,
-              onProgress: ({ label, message, progress: nextProgress }) => {
-                setProgress(nextProgress, label, message);
+              onProgress: (update) => {
+                handleProgressUpdate(update);
               },
             })
           : await runGpuBenchmark({
               preset,
               mock: isMockRun,
-              onProgress: ({ label, message, progress: nextProgress }) => {
-                setProgress(nextProgress, label, message);
+              onProgress: (update) => {
+                handleProgressUpdate(update);
               },
             });
 
@@ -543,6 +692,263 @@ export function BenchmarkExperience({
             </div>
           </section>
 
+          <section className="grid gap-6 xl:grid-cols-[1.05fr_0.95fr]">
+            <div className="dashboard-card p-7">
+              <div className="mb-6 flex items-center justify-between gap-4">
+                <div>
+                  <p className="eyebrow">Run state</p>
+                  <h2 className="mt-3 text-3xl font-semibold tracking-[-0.05em] text-slate-950">
+                    {currentLabel}
+                  </h2>
+                </div>
+                <div className="metric-chip border-primary/15 bg-primary/8 text-primary">
+                  {Math.round(progress)}%
+                </div>
+              </div>
+              <Progress value={progress} className="h-3 rounded-full bg-slate-100" />
+              <p className="mt-5 text-base leading-8 text-slate-600">
+                {currentMessage}
+              </p>
+
+              <div className="mt-8">
+                <div className="mb-4 flex items-center justify-between gap-4">
+                  <div>
+                    <p className="eyebrow">Live score estimates</p>
+                    <p className="mt-2 text-sm leading-6 text-slate-500">
+                      These refresh during the run. Final scores are computed after the selected benchmark completes.
+                    </p>
+                  </div>
+                  <div className="metric-chip border-primary/15 bg-primary/8 text-primary">
+                    Live
+                  </div>
+                </div>
+
+                <div
+                  className={cn(
+                    "grid gap-4",
+                    liveScores.length === 1
+                      ? "md:grid-cols-1"
+                      : liveScores.length === 2
+                        ? "md:grid-cols-2"
+                        : "md:grid-cols-3",
+                  )}
+                >
+                  {liveScores.map((entry) => (
+                    <div key={entry.id} className="soft-tile p-5">
+                      <div className="flex items-center justify-between gap-3">
+                        <p className="soft-label">{entry.label}</p>
+                        <span
+                          className={cn(
+                            "rounded-full px-2.5 py-1 text-[0.68rem] font-semibold uppercase tracking-[0.18em]",
+                            entry.status === "live"
+                              ? "bg-primary/10 text-primary"
+                              : entry.status === "complete"
+                                ? "bg-emerald-50 text-emerald-700"
+                                : "bg-slate-100 text-slate-500",
+                          )}
+                        >
+                          {entry.status}
+                        </span>
+                      </div>
+                      <p className="mt-4 text-4xl font-semibold tracking-[-0.06em] text-slate-950">
+                        {entry.score !== null ? entry.score.toLocaleString() : "--"}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="mt-8 overflow-hidden rounded-[2rem] bg-slate-950 p-6 text-white shadow-[0_28px_60px_rgba(15,23,42,0.24)]">
+                <div className="flex flex-wrap items-start justify-between gap-4">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-[0.22em] text-blue-200/90">
+                      Live benchmark feed
+                    </p>
+                    <h3 className="mt-3 text-2xl font-semibold tracking-[-0.05em] text-white">
+                      {liveTelemetry?.title ?? "Telemetry will stream here"}
+                    </h3>
+                    <p className="mt-3 max-w-2xl text-sm leading-7 text-slate-300">
+                      {liveTelemetry?.summary ??
+                        "When the benchmark starts, this area will show active workload lanes, throughput, and the calculations currently being exercised."}
+                    </p>
+                  </div>
+                  <div className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-200">
+                    {runState === "running"
+                      ? `${liveActivity.length} live lanes`
+                      : "Feed idle"}
+                  </div>
+                </div>
+
+                <div className="mt-6 flex h-32 items-end gap-2 rounded-[1.3rem] border border-white/8 bg-white/5 px-4 py-4">
+                  {activityHistory.map((value, index) => (
+                    <div
+                      key={`${benchmarkKind}-history-${index}`}
+                      className="flex-1 rounded-full bg-gradient-to-t from-primary via-blue-400 to-sky-200 opacity-90 transition-all"
+                      style={{
+                        height: `${Math.max(10, Math.round(value * 100))}%`,
+                      }}
+                    />
+                  ))}
+                </div>
+
+                <div className="mt-5 grid gap-3 lg:grid-cols-2">
+                  {liveActivity.map((entry) => (
+                    <div
+                      key={entry.id}
+                      className="rounded-[1.3rem] border border-white/8 bg-white/[0.04] px-4 py-4"
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <p className="text-sm font-semibold text-white">{entry.label}</p>
+                        <span className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-300">
+                          {Math.round(entry.normalized * 100)}%
+                        </span>
+                      </div>
+                      <div className="mt-3 h-2 rounded-full bg-white/10">
+                        <div
+                          className="h-full rounded-full bg-gradient-to-r from-sky-300 via-blue-400 to-primary transition-all"
+                          style={{ width: `${Math.max(8, Math.round(entry.normalized * 100))}%` }}
+                        />
+                      </div>
+                      <p className="mt-3 text-sm leading-6 text-slate-300">
+                        {entry.detail}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                  {(liveTelemetry?.metrics ?? [
+                    {
+                      label: "Run mode",
+                      value:
+                        benchmarkKind === "cpu"
+                          ? selectedCpuRunMode === "full"
+                            ? "Full CPU benchmark"
+                            : selectedCpuRunMode === "singleCore"
+                              ? "Single-core only"
+                              : "Multi-core only"
+                          : "Full GPU benchmark",
+                    },
+                    {
+                      label: "Target duration",
+                      value:
+                        benchmarkKind === "cpu" ? cpuModeDuration : copy.duration,
+                    },
+                    {
+                      label: "Status",
+                      value:
+                        runState === "running"
+                          ? "Waiting for first samples"
+                          : "Ready when you are",
+                    },
+                  ]).map((item) => (
+                    <div
+                      key={item.label}
+                      className="rounded-[1.1rem] border border-white/8 bg-white/[0.04] px-4 py-4"
+                    >
+                      <p className="text-[0.7rem] font-semibold uppercase tracking-[0.2em] text-slate-300">
+                        {item.label}
+                      </p>
+                      <p className="mt-3 text-base font-semibold text-white">
+                        {item.value}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="dashboard-card p-7">
+              <div className="mb-6 flex items-center gap-3">
+                <Monitor className="size-5 text-primary" />
+                <h2 className="text-2xl font-semibold tracking-[-0.04em] text-slate-950">
+                  Device snapshot
+                </h2>
+              </div>
+
+              {deviceProfile ? (
+                <>
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <div className="soft-tile p-4">
+                      <p className="soft-label">GPU renderer</p>
+                      <p className="mt-3 text-lg font-semibold text-slate-900">
+                        {deviceProfile.gpuRenderer}
+                      </p>
+                    </div>
+                    <div className="soft-tile p-4">
+                      <p className="soft-label">CPU cores</p>
+                      <p className="mt-3 text-lg font-semibold text-slate-900">
+                        {deviceProfile.cpuLogicalCores} logical cores
+                      </p>
+                    </div>
+                    <div className="soft-tile p-4">
+                      <p className="soft-label">Display</p>
+                      <p className="mt-3 text-lg font-semibold text-slate-900">
+                        {deviceProfile.display.physicalWidth} ×{" "}
+                        {deviceProfile.display.physicalHeight}
+                      </p>
+                    </div>
+                    <div className="soft-tile p-4">
+                      <p className="soft-label">Approx memory</p>
+                      <p className="mt-3 text-lg font-semibold text-slate-900">
+                        {memorySummary.value}
+                      </p>
+                      <p className="mt-2 text-sm leading-6 text-slate-500">
+                        {memorySummary.detail}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="mt-6 flex flex-wrap gap-3">
+                    {[
+                      {
+                        label: "WebAssembly",
+                        enabled: deviceProfile.capabilities.webAssembly,
+                      },
+                      {
+                        label: "Workers",
+                        enabled: deviceProfile.capabilities.worker,
+                      },
+                      {
+                        label: "SharedArrayBuffer",
+                        enabled: deviceProfile.capabilities.sharedArrayBuffer,
+                      },
+                      {
+                        label: "Cross-origin isolated",
+                        enabled: deviceProfile.capabilities.crossOriginIsolated,
+                      },
+                      {
+                        label: "WebGPU",
+                        enabled: deviceProfile.capabilities.webgpu,
+                      },
+                    ].map(({ label, enabled }) => (
+                      <Badge
+                        key={label}
+                        className={cn(
+                          "rounded-full border px-3 py-1.5",
+                          enabled
+                            ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                            : "border-slate-200 bg-slate-100 text-slate-500",
+                        )}
+                      >
+                        {enabled ? (
+                          <CheckCircle2 className="size-3.5" />
+                        ) : (
+                          <ShieldAlert className="size-3.5" />
+                        )}
+                        {label}
+                      </Badge>
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <p className="text-base leading-8 text-slate-600">
+                  Device detection has not completed yet.
+                </p>
+              )}
+            </div>
+          </section>
+
           <section id="results-preview">
             <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
               <div>
@@ -606,7 +1012,7 @@ export function BenchmarkExperience({
                         <p className="mt-7 text-xl font-medium text-slate-500">--</p>
                         <p className="mt-4 max-w-xs text-base leading-7 text-slate-400">
                           {runState === "running"
-                            ? "Benchmark active. Scores will appear after the selected run completes."
+                            ? "Final scores land here after the selected run completes."
                             : result && result.benchmarkKind === "cpu"
                               ? "This score was not part of the selected CPU run."
                               : "Run benchmark to see score."}
@@ -618,208 +1024,6 @@ export function BenchmarkExperience({
                   <div className="mt-4 h-4 w-2/3 rounded-full bg-slate-100" />
                 </div>
               ))}
-            </div>
-          </section>
-
-          <section className="grid gap-6 xl:grid-cols-[1.05fr_0.95fr]">
-            <div className="dashboard-card p-7">
-              <div className="mb-6 flex items-center justify-between gap-4">
-                <div>
-                  <p className="eyebrow">Run state</p>
-                  <h2 className="mt-3 text-3xl font-semibold tracking-[-0.05em] text-slate-950">
-                    {currentLabel}
-                  </h2>
-                </div>
-                <div className="metric-chip border-primary/15 bg-primary/8 text-primary">
-                  {Math.round(progress)}%
-                </div>
-              </div>
-              <Progress value={progress} className="h-3 rounded-full bg-slate-100" />
-              <p className="mt-5 text-base leading-8 text-slate-600">
-                {currentMessage}
-              </p>
-
-              <div className="mt-7 grid gap-3 sm:grid-cols-2">
-                {visibleStages.map((stage) => (
-                  <div key={stage} className="soft-tile px-4 py-4">
-                    <p className="font-medium text-slate-900">{stage}</p>
-                  </div>
-                ))}
-              </div>
-
-              <div className="mt-7 flex flex-wrap gap-3">
-                {copy.requirements.map((requirement) => (
-                  <div key={requirement} className="metric-chip">
-                    <CheckCircle2 className="size-3.5 text-primary" />
-                    {requirement}
-                  </div>
-                ))}
-              </div>
-
-              {authEnabled ? (
-                <div className="mt-7 rounded-[1.6rem] border border-slate-200 bg-slate-50 px-5 py-4 text-sm leading-7 text-slate-600">
-                  {user
-                    ? "Signed in: this benchmark run will attach to the current account."
-                    : "Anonymous mode is enabled. You can still run now and sign in later on the auth page."}
-                </div>
-              ) : null}
-            </div>
-
-            <div className="space-y-6">
-              <div className="dashboard-card p-7">
-                <div className="mb-6 flex items-center gap-3">
-                  <Monitor className="size-5 text-primary" />
-                  <h2 className="text-2xl font-semibold tracking-[-0.04em] text-slate-950">
-                    Device snapshot
-                  </h2>
-                </div>
-
-                {deviceProfile ? (
-                  <>
-                    <div className="grid gap-4 sm:grid-cols-2">
-                      <div className="soft-tile p-4">
-                        <p className="soft-label">GPU renderer</p>
-                        <p className="mt-3 text-lg font-semibold text-slate-900">
-                          {deviceProfile.gpuRenderer}
-                        </p>
-                      </div>
-                      <div className="soft-tile p-4">
-                        <p className="soft-label">CPU cores</p>
-                        <p className="mt-3 text-lg font-semibold text-slate-900">
-                          {deviceProfile.cpuLogicalCores} logical cores
-                        </p>
-                      </div>
-                      <div className="soft-tile p-4">
-                        <p className="soft-label">Display</p>
-                        <p className="mt-3 text-lg font-semibold text-slate-900">
-                          {deviceProfile.display.physicalWidth} ×{" "}
-                          {deviceProfile.display.physicalHeight}
-                        </p>
-                      </div>
-                      <div className="soft-tile p-4">
-                        <p className="soft-label">Approx memory</p>
-                        <p className="mt-3 text-lg font-semibold text-slate-900">
-                          {memorySummary.value}
-                        </p>
-                        <p className="mt-2 text-sm leading-6 text-slate-500">
-                          {memorySummary.detail}
-                        </p>
-                      </div>
-                    </div>
-
-                    <div className="mt-6 flex flex-wrap gap-3">
-                      {[
-                        {
-                          label: "WebAssembly",
-                          enabled: deviceProfile.capabilities.webAssembly,
-                        },
-                        {
-                          label: "Workers",
-                          enabled: deviceProfile.capabilities.worker,
-                        },
-                        {
-                          label: "SharedArrayBuffer",
-                          enabled: deviceProfile.capabilities.sharedArrayBuffer,
-                        },
-                        {
-                          label: "Cross-origin isolated",
-                          enabled: deviceProfile.capabilities.crossOriginIsolated,
-                        },
-                        {
-                          label: "WebGPU",
-                          enabled: deviceProfile.capabilities.webgpu,
-                        },
-                      ].map(({ label, enabled }) => (
-                        <Badge
-                          key={label}
-                          className={cn(
-                            "rounded-full border px-3 py-1.5",
-                            enabled
-                              ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-                              : "border-slate-200 bg-slate-100 text-slate-500",
-                          )}
-                        >
-                          {enabled ? (
-                            <CheckCircle2 className="size-3.5" />
-                          ) : (
-                            <ShieldAlert className="size-3.5" />
-                          )}
-                          {label}
-                        </Badge>
-                      ))}
-                    </div>
-                  </>
-                ) : (
-                  <p className="text-base leading-8 text-slate-600">
-                    Device detection has not completed yet.
-                  </p>
-                )}
-              </div>
-
-              <div className="dashboard-card p-7">
-                <div className="mb-5 flex items-center gap-3">
-                  <Info className="size-5 text-primary" />
-                  <h2 className="text-2xl font-semibold tracking-[-0.04em] text-slate-950">
-                    Run actions
-                  </h2>
-                </div>
-                <div className="grid gap-3">
-                  <Button
-                    className="h-12 rounded-full bg-primary text-primary-foreground"
-                    disabled={runState === "running" || isSubmitting}
-                    onClick={() => void startBenchmark("full")}
-                  >
-                    {runState === "running" || isSubmitting ? (
-                      <LoaderCircle className="size-4 animate-spin" />
-                    ) : (
-                      <ArrowRight className="size-4" />
-                    )}
-                    {runState === "running"
-                      ? "Running benchmark"
-                      : benchmarkKind === "cpu"
-                        ? "Start Full CPU Benchmark"
-                        : "Start GPU Benchmark"}
-                  </Button>
-                  {benchmarkKind === "cpu" ? (
-                    <>
-                      <Button
-                        variant="outline"
-                        className="h-12 rounded-full border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
-                        disabled={runState === "running" || isSubmitting}
-                        onClick={() => void startBenchmark("singleCore")}
-                      >
-                        Single-Core Benchmark
-                      </Button>
-                      <Button
-                        variant="outline"
-                        className="h-12 rounded-full border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
-                        disabled={runState === "running" || isSubmitting}
-                        onClick={() => void startBenchmark("multiCore")}
-                      >
-                        Multi-Core Benchmark
-                      </Button>
-                    </>
-                  ) : null}
-                  <Button
-                    variant="outline"
-                    className="h-12 rounded-full border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
-                    disabled={runState === "running"}
-                    onClick={() => void profileDevice()}
-                  >
-                    Refresh device profile
-                  </Button>
-                  <Button
-                    asChild
-                    variant="outline"
-                    className="h-12 rounded-full border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
-                  >
-                    <Link href="/auth">
-                      <UserRound className="size-4" />
-                      Auth
-                    </Link>
-                  </Button>
-                </div>
-              </div>
             </div>
           </section>
 

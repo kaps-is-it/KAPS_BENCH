@@ -4,7 +4,12 @@ import {
   calculateCpuAggregateSubScore,
   calculateCpuScore,
 } from "@/benchmarks/cpu/scoring";
-import type { BenchmarkProgressUpdate } from "@/benchmarks/shared/progress";
+import type {
+  BenchmarkActivityEntry,
+  BenchmarkLiveScore,
+  BenchmarkProgressUpdate,
+  BenchmarkTelemetryMetric,
+} from "@/benchmarks/shared/progress";
 import { resolveBenchmarkPreset } from "@/benchmarks/shared/preset";
 import { combineChecksums, roundMetric } from "@/benchmarks/shared/scoring";
 import type {
@@ -47,6 +52,21 @@ type CpuWorkerResponse = {
   notes: string;
   error?: string;
 };
+
+type CpuWorkerProgress = {
+  type: "progress";
+  kernel: CpuKernelId;
+  label: string;
+  workerIndex: number;
+  throughput: number;
+  iterations: number;
+  durationMs: number;
+  checksum: number;
+  unit: string;
+  notes: string;
+};
+
+type CpuWorkerMessage = CpuWorkerResponse | CpuWorkerProgress;
 
 type CpuWorkerClient = {
   runTask: (message: CpuWorkerRequest) => Promise<CpuWorkerResponse>;
@@ -118,7 +138,9 @@ async function fetchArrayBuffer(path: string) {
   return response.arrayBuffer();
 }
 
-function createCpuWorkerClient(): CpuWorkerClient {
+function createCpuWorkerClient(
+  onProgress?: (progress: CpuWorkerProgress) => void,
+): CpuWorkerClient {
   const worker = new Worker(new URL("./worker.ts", import.meta.url), {
     type: "module",
   });
@@ -130,7 +152,12 @@ function createCpuWorkerClient(): CpuWorkerClient {
       }
     | null = null;
 
-  worker.onmessage = (event: MessageEvent<CpuWorkerResponse>) => {
+  worker.onmessage = (event: MessageEvent<CpuWorkerMessage>) => {
+    if (event.data.type === "progress") {
+      onProgress?.(event.data);
+      return;
+    }
+
     const activeTask = pending;
     pending = null;
 
@@ -183,8 +210,11 @@ function createCpuWorkerClient(): CpuWorkerClient {
   };
 }
 
-function createCpuWorkerPool(workerCount: number) {
-  return Array.from({ length: workerCount }, () => createCpuWorkerClient());
+function createCpuWorkerPool(
+  workerCount: number,
+  onProgress?: (progress: CpuWorkerProgress) => void,
+) {
+  return Array.from({ length: workerCount }, () => createCpuWorkerClient(onProgress));
 }
 
 function kernelMetricFromResponse(response: CpuWorkerResponse): CpuKernelMetric {
@@ -222,6 +252,182 @@ function summarizeConcurrentKernel(
     checksum,
     notes: `${workerCount} workers completed ${iterations.toLocaleString()} deterministic iterations.`,
   };
+}
+
+function formatThroughput(value: number) {
+  const absolute = Math.max(0, value);
+
+  if (absolute >= 1_000_000_000) {
+    return `${roundMetric(absolute / 1_000_000_000)}B units/s`;
+  }
+
+  if (absolute >= 1_000_000) {
+    return `${roundMetric(absolute / 1_000_000)}M units/s`;
+  }
+
+  if (absolute >= 1_000) {
+    return `${roundMetric(absolute / 1_000)}K units/s`;
+  }
+
+  return `${roundMetric(absolute)} units/s`;
+}
+
+function formatCount(value: number) {
+  return Math.max(0, Math.round(value)).toLocaleString();
+}
+
+function estimateCpuAggregateScore(
+  id: "singleCore" | "multiCore",
+  label: string,
+  metrics: Partial<Record<CpuKernelId, CpuKernelMetric>>,
+  referenceThroughputs: Record<CpuKernelId, number>,
+) {
+  const kernels = CPU_KERNEL_ORDER.filter((kernel) => Boolean(metrics[kernel])).map(
+    (kernel) => {
+      const metric = metrics[kernel]!;
+
+      return {
+        id: kernel,
+        throughput: metric.throughput,
+        referenceThroughput: referenceThroughputs[kernel],
+        durationMs: metric.durationMs,
+        workerCount: metric.workerCount,
+        notes: metric.notes,
+      };
+    },
+  );
+
+  if (kernels.length === 0) {
+    return null;
+  }
+
+  return calculateCpuAggregateSubScore({
+    id,
+    label,
+    kernels,
+  }).score;
+}
+
+function estimateCpuSustainedScore(
+  metric: CpuKernelMetric | null,
+  referenceThroughput: number,
+) {
+  if (!metric) {
+    return null;
+  }
+
+  return calculateCpuAggregateSubScore({
+    id: "sustained",
+    label: "Sustained",
+    kernels: [
+      {
+        id: "mixedBurn",
+        throughput: metric.throughput,
+        referenceThroughput,
+        durationMs: metric.durationMs,
+        workerCount: metric.workerCount,
+        notes: metric.notes,
+      },
+    ],
+  }).score;
+}
+
+function buildCpuLiveScores({
+  runMode,
+  activeStage,
+  singleCoreScore,
+  multiCoreScore,
+  sustainedScore,
+}: {
+  runMode: CpuRunMode;
+  activeStage: "warmup" | "singleCore" | "multiCore" | "sustained" | "persisting";
+  singleCoreScore: number | null;
+  multiCoreScore: number | null;
+  sustainedScore: number | null;
+}): BenchmarkLiveScore[] {
+  if (runMode === "singleCore") {
+    return [
+      {
+        id: "singleCore",
+        label: "Single-core live",
+        score: singleCoreScore,
+        status:
+          activeStage === "singleCore"
+            ? "live"
+            : singleCoreScore !== null
+              ? "complete"
+              : "pending",
+      },
+    ];
+  }
+
+  if (runMode === "multiCore") {
+    return [
+      {
+        id: "multiCore",
+        label: "Multi-core live",
+        score: multiCoreScore,
+        status:
+          activeStage === "multiCore"
+            ? "live"
+            : multiCoreScore !== null
+              ? "complete"
+              : "pending",
+      },
+    ];
+  }
+
+  return [
+    {
+      id: "singleCore",
+      label: "Single-core live",
+      score: singleCoreScore,
+      status:
+        activeStage === "singleCore"
+          ? "live"
+          : singleCoreScore !== null
+            ? "complete"
+            : "pending",
+    },
+    {
+      id: "multiCore",
+      label: "Multi-core live",
+      score: multiCoreScore,
+      status:
+        activeStage === "multiCore"
+          ? "live"
+          : multiCoreScore !== null
+            ? "complete"
+            : "pending",
+    },
+    {
+      id: "sustained",
+      label: "Sustained live",
+      score: sustainedScore,
+      status:
+        activeStage === "sustained"
+          ? "live"
+          : sustainedScore !== null
+            ? "complete"
+            : "pending",
+    },
+  ];
+}
+
+function buildCpuActivityEntries(snapshots: CpuWorkerProgress[]): BenchmarkActivityEntry[] {
+  const visibleSnapshots = snapshots.slice(0, 12);
+  const peakThroughput = Math.max(
+    1,
+    ...visibleSnapshots.map((snapshot) => snapshot.throughput),
+  );
+
+  return visibleSnapshots.map((snapshot) => ({
+    id: `worker-${snapshot.workerIndex}`,
+    label: `Worker ${snapshot.workerIndex + 1}`,
+    detail: `${formatThroughput(snapshot.throughput)} • ${formatCount(snapshot.iterations)} iterations`,
+    value: snapshot.throughput,
+    normalized: Math.max(0.08, snapshot.throughput / peakThroughput),
+  }));
 }
 
 export async function runCpuBenchmark({
@@ -275,21 +481,183 @@ export async function runCpuBenchmark({
   const wasmBytes = await fetchArrayBuffer(config.assetPaths.wasmModule);
   const cancelSignal = createCancelBuffer();
   const visibilityGuard = createVisibilityGuard(() => cancelSignal.cancel());
-  const workerPool = createCpuWorkerPool(workerCount);
   let singleCoreMetrics: Record<CpuKernelId, CpuKernelMetric> | null = null;
   let multiCoreMetrics: Record<CpuKernelId, CpuKernelMetric> | null = null;
   let sustainedMetric: CpuKernelMetric | null = null;
   const startedAtPerf = performance.now();
+  let activeStage: "warmup" | "singleCore" | "multiCore" | "sustained" | "persisting" =
+    "warmup";
+  let activeKernel: CpuKernelId | "mixedBurn" | null = null;
+  let activeLabel = "Warmup";
+  let activeMessage =
+    runMode === "full"
+      ? `Priming ${workerCount} workers, WASM, and memory pages for the full CPU run.`
+      : `Priming ${workerCount} worker${workerCount > 1 ? "s" : ""} for the selected CPU run.`;
+  let activeStep = 1;
+  let activeProgress = 5;
+  const liveWorkerSnapshots = new Map<number, CpuWorkerProgress>();
+
+  const emitLiveCpuTelemetry = () => {
+    const snapshots = Array.from(liveWorkerSnapshots.values()).sort(
+      (left, right) => left.workerIndex - right.workerIndex,
+    );
+    const totalThroughput = snapshots.reduce(
+      (sum, snapshot) => sum + snapshot.throughput,
+      0,
+    );
+    const totalIterations = snapshots.reduce(
+      (sum, snapshot) => sum + snapshot.iterations,
+      0,
+    );
+    const elapsedMs = snapshots.length
+      ? Math.max(...snapshots.map((snapshot) => snapshot.durationMs))
+      : 0;
+    const activeMetric: CpuKernelMetric | null =
+      activeStage === "warmup" || !snapshots.length
+        ? null
+        : activeStage === "singleCore"
+          ? {
+              id: activeKernel as CpuKernelId,
+              label: CPU_SUITE_LABELS[activeKernel as CpuKernelId],
+              throughput: roundMetric(totalThroughput),
+              iterations: totalIterations,
+              durationMs: roundMetric(elapsedMs),
+              workerCount: 1,
+              unit: "work units/s",
+              checksum: snapshots[0]?.checksum ?? 0,
+              notes: snapshots[0]?.notes ?? "",
+            }
+          : {
+              id: "memoryStencil",
+              label:
+                activeStage === "sustained"
+                  ? "Mixed sustained CPU load"
+                  : CPU_SUITE_LABELS[activeKernel as CpuKernelId],
+              throughput: roundMetric(totalThroughput),
+              iterations: totalIterations,
+              durationMs: roundMetric(elapsedMs),
+              workerCount: Math.max(1, snapshots.length),
+              unit: "work units/s",
+              checksum: combineChecksums(snapshots.map((snapshot) => snapshot.checksum)),
+              notes:
+                activeStage === "sustained"
+                  ? "Round-robin mixed burn across the current worker pool."
+                  : `${snapshots.length} workers streaming telemetry for ${CPU_SUITE_LABELS[activeKernel as CpuKernelId].toLowerCase()}.`,
+            };
+    const liveSingleCoreScore = estimateCpuAggregateScore(
+      "singleCore",
+      "Single-core",
+      activeStage === "singleCore" && activeMetric
+        ? {
+            ...(singleCoreMetrics ?? {}),
+            [activeKernel as CpuKernelId]: activeMetric,
+          }
+        : singleCoreMetrics ?? {},
+      config.referenceThroughputs.singleCore,
+    );
+    const liveMultiCoreScore = estimateCpuAggregateScore(
+      "multiCore",
+      "Multi-core",
+      activeStage === "multiCore" && activeMetric
+        ? {
+            ...(multiCoreMetrics ?? {}),
+            [activeKernel as CpuKernelId]: activeMetric,
+          }
+        : multiCoreMetrics ?? {},
+      config.referenceThroughputs.multiCore,
+    );
+    const liveSustainedScore = estimateCpuSustainedScore(
+      activeStage === "sustained" && activeMetric ? activeMetric : sustainedMetric,
+      config.referenceThroughputs.sustained,
+    );
+    const metrics: BenchmarkTelemetryMetric[] = [
+      {
+        label: "Active kernel",
+        value:
+          activeStage === "warmup"
+            ? "Worker + WASM priming"
+            : activeStage === "sustained"
+              ? "Mixed sustained burn"
+              : activeKernel
+                ? CPU_SUITE_LABELS[activeKernel as CpuKernelId]
+                : activeLabel,
+      },
+      {
+        label: "Workers",
+        value: String(Math.max(snapshots.length, runMode === "singleCore" ? 1 : workerCount)),
+      },
+      {
+        label: "Throughput",
+        value: snapshots.length ? formatThroughput(totalThroughput) : "Waiting for telemetry",
+      },
+      {
+        label: "Iterations",
+        value: formatCount(totalIterations),
+      },
+      {
+        label: "Elapsed",
+        value: `${roundMetric(elapsedMs / 1000, 1)}s`,
+      },
+    ];
+
+    onProgress?.({
+      label: activeLabel,
+      message: activeMessage,
+      step: activeStep,
+      totalSteps,
+      progress: activeProgress,
+      telemetry: {
+        title: activeLabel,
+        summary: activeMessage,
+        liveScores: buildCpuLiveScores({
+          runMode,
+          activeStage,
+          singleCoreScore: liveSingleCoreScore,
+          multiCoreScore: liveMultiCoreScore,
+          sustainedScore: liveSustainedScore,
+        }),
+        metrics,
+        activity: buildCpuActivityEntries(snapshots),
+      },
+    });
+  };
+
+  const workerPool = createCpuWorkerPool(workerCount, (snapshot) => {
+    liveWorkerSnapshots.set(snapshot.workerIndex, snapshot);
+    emitLiveCpuTelemetry();
+  });
+
+  const setActiveCpuStage = ({
+    stage,
+    label,
+    message,
+    step,
+    progress,
+    kernel = null,
+  }: {
+    stage: "warmup" | "singleCore" | "multiCore" | "sustained" | "persisting";
+    label: string;
+    message: string;
+    step: number;
+    progress: number;
+    kernel?: CpuKernelId | "mixedBurn" | null;
+  }) => {
+    activeStage = stage;
+    activeKernel = kernel;
+    activeLabel = label;
+    activeMessage = message;
+    activeStep = step;
+    activeProgress = progress;
+    liveWorkerSnapshots.clear();
+    emitLiveCpuTelemetry();
+  };
 
   try {
-    onProgress?.({
+    setActiveCpuStage({
+      stage: "warmup",
       label: "Warmup",
-      message:
-        runMode === "full"
-          ? `Priming ${workerCount} workers, WASM, and memory pages for the full CPU run.`
-          : `Priming ${workerCount} worker${workerCount > 1 ? "s" : ""} for the selected CPU run.`,
+      message: activeMessage,
       step: 1,
-      totalSteps,
       progress: 5,
     });
 
@@ -317,12 +685,13 @@ export async function runCpuBenchmark({
       for (const kernel of CPU_KERNEL_ORDER) {
         step += 1;
 
-        onProgress?.({
+        setActiveCpuStage({
+          stage: "singleCore",
           label: `Single-core: ${CPU_SUITE_LABELS[kernel]}`,
           message: "Running the single-core suite on one dedicated worker.",
           step,
-          totalSteps,
           progress: 5 + Math.round((step / totalSteps) * 85),
+          kernel,
         });
 
         const response = await primaryWorker.runTask({
@@ -338,6 +707,7 @@ export async function runCpuBenchmark({
 
         visibilityGuard.assertVisible();
         singleCoreMetrics[kernel] = kernelMetricFromResponse(response);
+        emitLiveCpuTelemetry();
       }
     }
 
@@ -347,12 +717,13 @@ export async function runCpuBenchmark({
       for (const kernel of CPU_KERNEL_ORDER) {
         step += 1;
 
-        onProgress?.({
+        setActiveCpuStage({
+          stage: "multiCore",
           label: `Multi-core: ${CPU_SUITE_LABELS[kernel]}`,
           message: `Scaling ${CPU_SUITE_LABELS[kernel].toLowerCase()} across ${workerCount} workers.`,
           step,
-          totalSteps,
           progress: 5 + Math.round((step / totalSteps) * 85),
+          kernel,
         });
 
         const stageStartedAt = performance.now();
@@ -378,18 +749,20 @@ export async function runCpuBenchmark({
           performance.now() - stageStartedAt,
           workerCount,
         );
+        emitLiveCpuTelemetry();
       }
     }
 
     if (runMode === "full") {
       step += 1;
-      onProgress?.({
+      setActiveCpuStage({
+        stage: "sustained",
         label: "Sustained burn",
         message:
           "Holding a mixed CPU load to expose thermal throttling and late-run stability.",
         step,
-        totalSteps,
         progress: 90,
+        kernel: "mixedBurn",
       });
 
       const sustainedStartedAt = performance.now();
@@ -438,6 +811,7 @@ export async function runCpuBenchmark({
         notes:
           "Round-robin integer, floating-point, matrix, memory, compression, and raymarch workers under steady-state load.",
       };
+      emitLiveCpuTelemetry();
     }
 
     const subScores: CpuBenchmarkSubScores = {
@@ -506,7 +880,8 @@ export async function runCpuBenchmark({
       sustainedMetric?.checksum ?? 0,
     ]);
 
-    onProgress?.({
+    setActiveCpuStage({
+      stage: "persisting",
       label:
         runMode === "singleCore"
           ? "Single-core CPU run complete"
@@ -515,8 +890,46 @@ export async function runCpuBenchmark({
             : "CPU run complete",
       message: "Persisting the CPU result.",
       step: totalSteps,
+      progress: 96,
+    });
+
+    onProgress?.({
+      label: activeLabel,
+      message: activeMessage,
+      step: totalSteps,
       totalSteps,
       progress: 96,
+      telemetry: {
+        title: activeLabel,
+        summary: activeMessage,
+        liveScores: buildCpuLiveScores({
+          runMode,
+          activeStage,
+          singleCoreScore: subScores.singleCore?.score ?? null,
+          multiCoreScore: subScores.multiCore?.score ?? null,
+          sustainedScore: subScores.sustained?.score ?? null,
+        }),
+        metrics: [
+          {
+            label: "Completed sections",
+            value:
+              runMode === "full"
+                ? "Single-core + multi-core + sustained"
+                : runMode === "singleCore"
+                  ? "Single-core only"
+                  : "Multi-core only",
+          },
+          {
+            label: "Workers",
+            value: String(workerCount),
+          },
+          {
+            label: "Elapsed",
+            value: `${roundMetric((performance.now() - startedAtPerf) / 1000, 1)}s`,
+          },
+        ],
+        activity: [],
+      },
     });
 
     return {

@@ -35,6 +35,28 @@ type CpuWorkerResponse = {
   error?: string;
 };
 
+type CpuWorkerProgress = {
+  type: "progress";
+  kernel: CpuKernelId;
+  label: string;
+  workerIndex: number;
+  throughput: number;
+  iterations: number;
+  durationMs: number;
+  checksum: number;
+  unit: string;
+  notes: string;
+};
+
+type CpuWorkerMessage = CpuWorkerResponse | CpuWorkerProgress;
+
+type CpuProgressReporter = (snapshot: {
+  checksum: number;
+  iterations: number;
+  operations: number;
+  notes: string;
+}) => void;
+
 function createSeededState(seed: number) {
   let state = seed >>> 0;
 
@@ -101,12 +123,43 @@ function signedDistancePlane(y: number, offset: number) {
   return y + offset;
 }
 
+function createProgressReporter(request: CpuWorkerRequest, start: number): CpuProgressReporter {
+  let lastReportAt = 0;
+
+  return ({ checksum, iterations, operations, notes }) => {
+    const now = performance.now();
+
+    if (now - lastReportAt < 250) {
+      return;
+    }
+
+    lastReportAt = now;
+    const durationMs = Math.max(1, now - start);
+    const throughput = operations / (durationMs / 1000);
+
+    self.postMessage({
+      type: "progress",
+      kernel: request.kernel,
+      label: CPU_SUITE_LABELS[request.kernel],
+      workerIndex: request.workerIndex,
+      throughput,
+      iterations,
+      durationMs,
+      checksum,
+      unit: "work units/s",
+      notes,
+    } satisfies CpuWorkerProgress);
+  };
+}
+
 async function runIntegerBranchHash(
   length: number,
   deadline: number,
   seed: number,
   cancelView?: Int32Array,
+  reportProgress?: CpuProgressReporter,
 ) {
+  const notes = "Hashed 32-bit integer lanes with branch-heavy mixing.";
   const values = createUint32Data(length, seed);
   let checksum = 2166136261 >>> 0;
   let iterations = 0;
@@ -127,9 +180,10 @@ async function runIntegerBranchHash(
 
     iterations += 1;
     operations += values.length;
+    reportProgress?.({ checksum, iterations, operations, notes });
   }
 
-  return { checksum, iterations, operations, notes: "Hashed 32-bit integer lanes with branch-heavy mixing." };
+  return { checksum, iterations, operations, notes };
 }
 
 async function runCompression(
@@ -137,7 +191,9 @@ async function runCompression(
   deadline: number,
   seed: number,
   cancelView?: Int32Array,
+  reportProgress?: CpuProgressReporter,
 ) {
+  const notes = "Performed deterministic byte-run compression and validation passes.";
   const source = createUint8Data(length, seed);
   const encoded = new Uint32Array(length);
   let checksum = 0;
@@ -172,13 +228,14 @@ async function runCompression(
 
     iterations += 1;
     operations += source.length * 2;
+    reportProgress?.({ checksum, iterations, operations, notes });
   }
 
   return {
     checksum,
     iterations,
     operations,
-    notes: "Performed deterministic byte-run compression and validation passes.",
+    notes,
   };
 }
 
@@ -187,7 +244,9 @@ async function runFloatingPoint(
   deadline: number,
   seed: number,
   cancelView?: Int32Array,
+  reportProgress?: CpuProgressReporter,
 ) {
+  const notes = "Mixed transcendental and scalar floating-point math over typed arrays.";
   const values = createFloatData(length, seed);
   let checksum = 0;
   let iterations = 0;
@@ -208,13 +267,14 @@ async function runFloatingPoint(
     checksum = (checksum + Math.floor(accumulator * 1000)) >>> 0;
     iterations += 1;
     operations += values.length * 6;
+    reportProgress?.({ checksum, iterations, operations, notes });
   }
 
   return {
     checksum,
     iterations,
     operations,
-    notes: "Mixed transcendental and scalar floating-point math over typed arrays.",
+    notes,
   };
 }
 
@@ -223,7 +283,9 @@ async function runMatrix(
   deadline: number,
   seed: number,
   cancelView?: Int32Array,
+  reportProgress?: CpuProgressReporter,
 ) {
+  const notes = "Executed dense matrix multiplication on Float32 tiles.";
   const left = createMatrix(size, seed);
   const right = createMatrix(size, seed + 17);
   const output = new Float32Array(size * size);
@@ -247,13 +309,14 @@ async function runMatrix(
     checksum = (checksum + Math.floor(output[(iterations * 13) % output.length] * 1000)) >>> 0;
     iterations += 1;
     operations += size * size * size * 2;
+    reportProgress?.({ checksum, iterations, operations, notes });
   }
 
   return {
     checksum,
     iterations,
     operations,
-    notes: "Executed dense matrix multiplication on Float32 tiles.",
+    notes,
   };
 }
 
@@ -262,7 +325,9 @@ async function runConvolution(
   deadline: number,
   seed: number,
   cancelView?: Int32Array,
+  reportProgress?: CpuProgressReporter,
 ) {
+  const notes = "Applied a 3x3 blur kernel across a deterministic image field.";
   const image = createFloatData(size * size, seed);
   const output = new Float64Array(size * size);
   const kernel = [
@@ -301,13 +366,14 @@ async function runConvolution(
     checksum = (checksum + Math.floor(output[(iterations * 17) % output.length] * 1000)) >>> 0;
     iterations += 1;
     operations += (size - 2) * (size - 2) * 9;
+    reportProgress?.({ checksum, iterations, operations, notes });
   }
 
   return {
     checksum,
     iterations,
     operations,
-    notes: "Applied a 3x3 blur kernel across a deterministic image field.",
+    notes,
   };
 }
 
@@ -316,7 +382,9 @@ async function runMemoryStencil(
   deadline: number,
   seed: number,
   cancelView?: Int32Array,
+  reportProgress?: CpuProgressReporter,
 ) {
+  const notes = "Copied and relaxed a 2D stencil grid under memory pressure.";
   const length = width * width;
   const source = createFloatData(length, seed);
   const target = new Float64Array(length);
@@ -344,13 +412,14 @@ async function runMemoryStencil(
     checksum = (checksum + Math.floor(target[(iterations * 7) % target.length] * 1000)) >>> 0;
     iterations += 1;
     operations += length * 6;
+    reportProgress?.({ checksum, iterations, operations, notes });
   }
 
   return {
     checksum,
     iterations,
     operations,
-    notes: "Copied and relaxed a 2D stencil grid under memory pressure.",
+    notes,
   };
 }
 
@@ -358,7 +427,9 @@ async function runWasmCompile(
   moduleBytes: ArrayBuffer,
   deadline: number,
   cancelView?: Int32Array,
+  reportProgress?: CpuProgressReporter,
 ) {
+  const notes = "Repeatedly compiled and instantiated the local WASM benchmark asset.";
   const moduleSource = moduleBytes.slice(0);
   let checksum = 0;
   let iterations = 0;
@@ -375,13 +446,14 @@ async function runWasmCompile(
     checksum = (checksum + mainExport + iterations) >>> 0;
     iterations += 1;
     operations += moduleBytes.byteLength;
+    reportProgress?.({ checksum, iterations, operations, notes });
   }
 
   return {
     checksum,
     iterations,
     operations,
-    notes: "Repeatedly compiled and instantiated the local WASM benchmark asset.",
+    notes,
   };
 }
 
@@ -390,7 +462,9 @@ async function runRaymarch(
   deadline: number,
   seed: number,
   cancelView?: Int32Array,
+  reportProgress?: CpuProgressReporter,
 ) {
+  const notes = "Traced a signed-distance field scene entirely on the CPU.";
   const next = createSeededState(seed);
   let checksum = 0;
   let iterations = 0;
@@ -420,13 +494,14 @@ async function runRaymarch(
     checksum = (checksum + Math.floor(frameEnergy * 100)) >>> 0;
     iterations += 1;
     operations += resolution * resolution * 22;
+    reportProgress?.({ checksum, iterations, operations, notes });
   }
 
   return {
     checksum,
     iterations,
     operations,
-    notes: "Traced a signed-distance field scene entirely on the CPU.",
+    notes,
   };
 }
 
@@ -436,6 +511,7 @@ async function runKernel(request: CpuWorkerRequest): Promise<CpuWorkerResponse> 
   const cancelView = request.cancelBuffer
     ? new Int32Array(request.cancelBuffer)
     : undefined;
+  const reportProgress = createProgressReporter(request, start);
 
   let result:
     | {
@@ -453,6 +529,7 @@ async function runKernel(request: CpuWorkerRequest): Promise<CpuWorkerResponse> 
         deadline,
         request.seed,
         cancelView,
+        reportProgress,
       );
       break;
     case "compression":
@@ -461,6 +538,7 @@ async function runKernel(request: CpuWorkerRequest): Promise<CpuWorkerResponse> 
         deadline,
         request.seed,
         cancelView,
+        reportProgress,
       );
       break;
     case "floatingPoint":
@@ -469,6 +547,7 @@ async function runKernel(request: CpuWorkerRequest): Promise<CpuWorkerResponse> 
         deadline,
         request.seed,
         cancelView,
+        reportProgress,
       );
       break;
     case "matrix":
@@ -477,6 +556,7 @@ async function runKernel(request: CpuWorkerRequest): Promise<CpuWorkerResponse> 
         deadline,
         request.seed,
         cancelView,
+        reportProgress,
       );
       break;
     case "convolution":
@@ -485,6 +565,7 @@ async function runKernel(request: CpuWorkerRequest): Promise<CpuWorkerResponse> 
         deadline,
         request.seed,
         cancelView,
+        reportProgress,
       );
       break;
     case "memoryStencil":
@@ -493,6 +574,7 @@ async function runKernel(request: CpuWorkerRequest): Promise<CpuWorkerResponse> 
         deadline,
         request.seed,
         cancelView,
+        reportProgress,
       );
       break;
     case "wasmCompile":
@@ -500,7 +582,12 @@ async function runKernel(request: CpuWorkerRequest): Promise<CpuWorkerResponse> 
         throw new Error("WASM module bytes are required for the compile kernel.");
       }
 
-      result = await runWasmCompile(request.wasmModule, deadline, cancelView);
+      result = await runWasmCompile(
+        request.wasmModule,
+        deadline,
+        cancelView,
+        reportProgress,
+      );
       break;
     case "raymarch":
       result = await runRaymarch(
@@ -508,6 +595,7 @@ async function runKernel(request: CpuWorkerRequest): Promise<CpuWorkerResponse> 
         deadline,
         request.seed,
         cancelView,
+        reportProgress,
       );
       break;
     default:
@@ -532,7 +620,7 @@ async function runKernel(request: CpuWorkerRequest): Promise<CpuWorkerResponse> 
 
 self.onmessage = (event: MessageEvent<CpuWorkerRequest>) => {
   void runKernel(event.data)
-    .then((response) => self.postMessage(response))
+    .then((response) => self.postMessage(response satisfies CpuWorkerMessage))
     .catch((error: unknown) =>
       self.postMessage({
         type: "run-kernel",
@@ -545,6 +633,6 @@ self.onmessage = (event: MessageEvent<CpuWorkerRequest>) => {
         unit: "work units/s",
         notes: "",
         error: error instanceof Error ? error.message : "CPU benchmark worker failed.",
-      } satisfies CpuWorkerResponse),
+      } satisfies CpuWorkerMessage),
     );
 };

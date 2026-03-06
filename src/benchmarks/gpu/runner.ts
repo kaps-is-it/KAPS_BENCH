@@ -8,7 +8,12 @@ import {
   calculateGpuAggregateSubScore,
   calculateGpuScore,
 } from "@/benchmarks/gpu/scoring";
-import type { BenchmarkProgressUpdate } from "@/benchmarks/shared/progress";
+import type {
+  BenchmarkActivityEntry,
+  BenchmarkLiveScore,
+  BenchmarkProgressUpdate,
+  BenchmarkTelemetryMetric,
+} from "@/benchmarks/shared/progress";
 import { resolveBenchmarkPreset } from "@/benchmarks/shared/preset";
 import { combineChecksums, roundMetric } from "@/benchmarks/shared/scoring";
 import type {
@@ -839,17 +844,25 @@ async function runFixedTimeStage({
   durationMs,
   buildBatch,
   visibilityGuard,
+  onTick,
 }: {
   harness: GpuHarness;
   durationMs: number;
   buildBatch: (iteration: number) => (encoder: GPUCommandEncoder) => BatchStats;
   visibilityGuard: ReturnType<typeof createVisibilityGuard>;
+  onTick?: (snapshot: {
+    throughput: number;
+    iterations: number;
+    durationMs: number;
+    checksum: number;
+  }) => void;
 }) {
   const stageStartedAt = performance.now();
   let iterations = 0;
   let checksum = 0;
   let workUnits = 0;
   let timestampQueryUsed = false;
+  let lastTickAt = stageStartedAt;
 
   if (harness.timestampQuerySupported) {
     const sample = await sampleGpuTimestamp(harness, buildBatch(iterations));
@@ -859,6 +872,12 @@ async function runFixedTimeStage({
       checksum = (checksum + sample.stats.checksum) >>> 0;
       iterations += 1;
       timestampQueryUsed = sample.durationMs !== null;
+      onTick?.({
+        throughput: roundMetric(workUnits / Math.max(0.001, (performance.now() - stageStartedAt) / 1000)),
+        iterations,
+        durationMs: roundMetric(performance.now() - stageStartedAt),
+        checksum,
+      });
     }
   }
 
@@ -868,6 +887,18 @@ async function runFixedTimeStage({
     workUnits += stats.workUnits;
     checksum = (checksum + stats.checksum) >>> 0;
     iterations += 1;
+
+    const now = performance.now();
+
+    if (now - lastTickAt >= 250) {
+      lastTickAt = now;
+      onTick?.({
+        throughput: roundMetric(workUnits / Math.max(0.001, (now - stageStartedAt) / 1000)),
+        iterations,
+        durationMs: roundMetric(now - stageStartedAt),
+        checksum,
+      });
+    }
   }
 
   const elapsed = Math.max(1, performance.now() - stageStartedAt);
@@ -897,6 +928,284 @@ function createGpuKernelMetric(
     timestampQueryUsed: result.timestampQueryUsed,
     notes,
   };
+}
+
+function formatThroughput(value: number) {
+  const absolute = Math.max(0, value);
+
+  if (absolute >= 1_000_000_000) {
+    return `${roundMetric(absolute / 1_000_000_000)}B units/s`;
+  }
+
+  if (absolute >= 1_000_000) {
+    return `${roundMetric(absolute / 1_000_000)}M units/s`;
+  }
+
+  if (absolute >= 1_000) {
+    return `${roundMetric(absolute / 1_000)}K units/s`;
+  }
+
+  return `${roundMetric(absolute)} units/s`;
+}
+
+function estimateGpuAggregateScore<TKernelId extends GpuGraphicsKernelId | GpuComputeKernelId>(
+  id: GpuAggregateScoreId,
+  label: string,
+  metrics: Partial<Record<TKernelId, GpuKernelMetric>>,
+  referenceThroughputs: Record<TKernelId, number>,
+) {
+  const kernels = Object.keys(referenceThroughputs)
+    .filter((kernel) => Boolean(metrics[kernel as TKernelId]))
+    .map((kernel) => {
+      const typedKernel = kernel as TKernelId;
+      const metric = metrics[typedKernel]!;
+
+      return {
+        id: typedKernel,
+        throughput: metric.throughput,
+        referenceThroughput: referenceThroughputs[typedKernel],
+        durationMs: metric.durationMs,
+        notes: metric.notes,
+      };
+    });
+
+  if (kernels.length === 0) {
+    return null;
+  }
+
+  return calculateGpuAggregateSubScore({
+    id,
+    label,
+    kernels,
+  }).score;
+}
+
+function buildGpuLiveScores({
+  activeStage,
+  graphicsScore,
+  computeScore,
+  sustainedScore,
+}: {
+  activeStage: "warmup" | "graphics" | "compute" | "sustained" | "persisting";
+  graphicsScore: number | null;
+  computeScore: number | null;
+  sustainedScore: number | null;
+}): BenchmarkLiveScore[] {
+  return [
+    {
+      id: "graphics",
+      label: "Graphics live",
+      score: graphicsScore,
+      status:
+        activeStage === "graphics"
+          ? "live"
+          : graphicsScore !== null
+            ? "complete"
+            : "pending",
+    },
+    {
+      id: "compute",
+      label: "Compute live",
+      score: computeScore,
+      status:
+        activeStage === "compute"
+          ? "live"
+          : computeScore !== null
+            ? "complete"
+            : "pending",
+    },
+    {
+      id: "sustained",
+      label: "Sustained live",
+      score: sustainedScore,
+      status:
+        activeStage === "sustained"
+          ? "live"
+          : sustainedScore !== null
+            ? "complete"
+            : "pending",
+    },
+  ];
+}
+
+function buildGpuActivityEntries({
+  activeStage,
+  activeKernel,
+  throughputRatio,
+  config,
+}: {
+  activeStage: "warmup" | "graphics" | "compute" | "sustained" | "persisting";
+  activeKernel: GpuGraphicsKernelId | GpuComputeKernelId | "mixedLoad" | null;
+  throughputRatio: number;
+  config: ReturnType<typeof getGpuPreset>;
+}): BenchmarkActivityEntry[] {
+  const normalizedThroughput = Math.max(0.08, Math.min(1, throughputRatio));
+
+  if (activeStage === "graphics" && activeKernel) {
+    const renderPresets: Record<
+      GpuGraphicsKernelId,
+      { passes: number; loops: number; instances: number }
+    > = {
+      rasterScene: {
+        passes: 3,
+        loops: 6,
+        instances: config.renderBatch.rasterInstances,
+      },
+      shadingScene: {
+        passes: 4,
+        loops: config.renderBatch.shadingLoops,
+        instances: 1,
+      },
+      instancingScene: {
+        passes: 3,
+        loops: 10,
+        instances: config.renderBatch.instancingInstances,
+      },
+      particleScene: {
+        passes: 2,
+        loops: 8,
+        instances: config.renderBatch.particleInstances,
+      },
+      postProcessScene: {
+        passes: 4,
+        loops: config.renderBatch.postProcessLoops,
+        instances: 1,
+      },
+    };
+    const preset = renderPresets[activeKernel as GpuGraphicsKernelId];
+
+    return [
+      {
+        id: "render-passes",
+        label: "Render passes",
+        detail: `${preset.passes} passes per submission`,
+        value: preset.passes,
+        normalized: preset.passes / 4,
+      },
+      {
+        id: "shader-pressure",
+        label: "Shader pressure",
+        detail: `${preset.loops.toLocaleString()} loop bodies`,
+        value: preset.loops,
+        normalized: Math.max(
+          0.08,
+          preset.loops /
+            Math.max(config.renderBatch.shadingLoops, config.renderBatch.postProcessLoops),
+        ),
+      },
+      {
+        id: "scene-throughput",
+        label: "Scene throughput",
+        detail: `${formatThroughput(throughputRatio * config.referenceThroughputs.graphics[activeKernel as GpuGraphicsKernelId])}`,
+        value: throughputRatio,
+        normalized: normalizedThroughput,
+      },
+    ];
+  }
+
+  if (activeStage === "compute" && activeKernel) {
+    const computePresets: Record<
+      GpuComputeKernelId,
+      { dispatches: number; dataset: number; label: string }
+    > = {
+      matrixCompute: {
+        dispatches: 4,
+        dataset: config.computeBatch.matrixSize,
+        label: `${config.computeBatch.matrixSize}x${config.computeBatch.matrixSize} matrix tiles`,
+      },
+      convolutionCompute: {
+        dispatches: 3,
+        dataset: config.computeBatch.convolutionSize,
+        label: `${config.computeBatch.convolutionSize}px convolution grid`,
+      },
+      simulationCompute: {
+        dispatches: 5,
+        dataset: config.computeBatch.simulationParticles,
+        label: `${config.computeBatch.simulationParticles.toLocaleString()} particle bodies`,
+      },
+    };
+    const preset = computePresets[activeKernel as GpuComputeKernelId];
+
+    return [
+      {
+        id: "dispatch-pressure",
+        label: "Dispatch pressure",
+        detail: `${preset.dispatches} dispatch repeats`,
+        value: preset.dispatches,
+        normalized: preset.dispatches / 5,
+      },
+      {
+        id: "dataset-size",
+        label: "Dataset size",
+        detail: preset.label,
+        value: preset.dataset,
+        normalized:
+          preset.dataset /
+          Math.max(
+            config.computeBatch.matrixSize,
+            config.computeBatch.convolutionSize,
+            config.computeBatch.simulationParticles,
+          ),
+      },
+      {
+        id: "compute-throughput",
+        label: "Compute throughput",
+        detail: `${formatThroughput(throughputRatio * config.referenceThroughputs.compute[activeKernel as GpuComputeKernelId])}`,
+        value: throughputRatio,
+        normalized: normalizedThroughput,
+      },
+    ];
+  }
+
+  if (activeStage === "sustained") {
+    return [
+      {
+        id: "render-pressure",
+        label: "Render pressure",
+        detail: "Instancing + fullscreen passes kept live",
+        value: 0.88,
+        normalized: 0.88,
+      },
+      {
+        id: "compute-pressure",
+        label: "Compute pressure",
+        detail: "Simulation dispatches feeding the mixed loop",
+        value: 0.9,
+        normalized: 0.9,
+      },
+      {
+        id: "mixed-throughput",
+        label: "Mixed throughput",
+        detail: `${formatThroughput(throughputRatio * config.referenceThroughputs.sustained)}`,
+        value: throughputRatio,
+        normalized: normalizedThroughput,
+      },
+    ];
+  }
+
+  return [
+    {
+      id: "pipeline-setup",
+      label: "Pipeline setup",
+      detail: "Compiling shaders and filling GPU buffers",
+      value: 0.55,
+      normalized: 0.55,
+    },
+    {
+      id: "queue-priming",
+      label: "Queue priming",
+      detail: "Priming render and compute submission paths",
+      value: 0.48,
+      normalized: 0.48,
+    },
+    {
+      id: "adapter-sync",
+      label: "Adapter sync",
+      detail: "Stabilizing timestamp and queue sampling",
+      value: 0.42,
+      normalized: 0.42,
+    },
+  ];
 }
 
 function createMockGpuResult(
@@ -1131,13 +1440,186 @@ export async function runGpuBenchmark({
   const computeMetrics = {} as Record<GpuComputeKernelId, GpuKernelMetric>;
   let sustainedMetric: GpuKernelMetric | null = null;
   const overallStart = performance.now();
+  let activeStage: "warmup" | "graphics" | "compute" | "sustained" | "persisting" =
+    "warmup";
+  let activeKernel: GpuGraphicsKernelId | GpuComputeKernelId | "mixedLoad" | null =
+    null;
+  let activeLabel = "GPU warmup";
+  let activeMessage =
+    "Configuring pipelines, buffers, and shader caches on the selected adapter.";
+  let activeStep = 1;
+  let activeProgress = 5;
+  let liveSnapshot: {
+    throughput: number;
+    iterations: number;
+    durationMs: number;
+    checksum: number;
+  } | null = null;
+
+  const emitGpuTelemetry = () => {
+    const activeMetric =
+      !liveSnapshot || activeStage === "warmup" || !activeKernel
+        ? null
+        : createGpuKernelMetric(
+            activeKernel,
+            activeKernel === "mixedLoad"
+              ? "Mixed sustained load"
+              : activeKernel in GPU_GRAPHICS_LABELS
+                ? GPU_GRAPHICS_LABELS[activeKernel as GpuGraphicsKernelId]
+                : GPU_COMPUTE_LABELS[activeKernel as GpuComputeKernelId],
+            {
+              ...liveSnapshot,
+              timestampQueryUsed: false,
+            },
+            activeMessage,
+          );
+    const liveGraphicsScore = estimateGpuAggregateScore(
+      "graphics",
+      "Graphics",
+      activeStage === "graphics" && activeMetric
+        ? {
+            ...graphicsMetrics,
+            [activeKernel as GpuGraphicsKernelId]: activeMetric,
+          }
+        : graphicsMetrics,
+      config.referenceThroughputs.graphics,
+    );
+    const liveComputeScore = estimateGpuAggregateScore(
+      "compute",
+      "Compute",
+      activeStage === "compute" && activeMetric
+        ? {
+            ...computeMetrics,
+            [activeKernel as GpuComputeKernelId]: activeMetric,
+          }
+        : computeMetrics,
+      config.referenceThroughputs.compute,
+    );
+    const liveSustainedScore =
+      activeStage === "sustained" && activeMetric
+        ? calculateGpuAggregateSubScore({
+            id: "sustained",
+            label: "Sustained",
+            kernels: [
+              {
+                id: "mixedLoad",
+                throughput: activeMetric.throughput,
+                referenceThroughput: config.referenceThroughputs.sustained,
+                durationMs: activeMetric.durationMs,
+                notes: activeMetric.notes,
+              },
+            ],
+          }).score
+        : sustainedMetric
+          ? calculateGpuAggregateSubScore({
+              id: "sustained",
+              label: "Sustained",
+              kernels: [
+                {
+                  id: "mixedLoad",
+                  throughput: sustainedMetric.throughput,
+                  referenceThroughput: config.referenceThroughputs.sustained,
+                  durationMs: sustainedMetric.durationMs,
+                  notes: sustainedMetric.notes,
+                },
+              ],
+            }).score
+          : null;
+    const throughputRatio =
+      activeStage === "graphics" && activeMetric && activeKernel
+        ? activeMetric.throughput /
+          config.referenceThroughputs.graphics[activeKernel as GpuGraphicsKernelId]
+        : activeStage === "compute" && activeMetric && activeKernel
+          ? activeMetric.throughput /
+            config.referenceThroughputs.compute[activeKernel as GpuComputeKernelId]
+          : activeStage === "sustained" && activeMetric
+            ? activeMetric.throughput / config.referenceThroughputs.sustained
+            : 0;
+    const metrics: BenchmarkTelemetryMetric[] = [
+      {
+        label: "Active stage",
+        value:
+          activeStage === "warmup"
+            ? "Adapter + pipeline warmup"
+            : activeKernel === "mixedLoad"
+              ? "Mixed sustained load"
+              : activeKernel && activeKernel in GPU_GRAPHICS_LABELS
+                ? GPU_GRAPHICS_LABELS[activeKernel as GpuGraphicsKernelId]
+                : activeKernel
+                  ? GPU_COMPUTE_LABELS[activeKernel as GpuComputeKernelId]
+                  : activeLabel,
+      },
+      {
+        label: "Throughput",
+        value: liveSnapshot ? formatThroughput(liveSnapshot.throughput) : "Waiting for telemetry",
+      },
+      {
+        label: "Batches",
+        value: String(liveSnapshot?.iterations ?? 0),
+      },
+      {
+        label: "Elapsed",
+        value: `${roundMetric((liveSnapshot?.durationMs ?? 0) / 1000, 1)}s`,
+      },
+    ];
+
+    onProgress?.({
+      label: activeLabel,
+      message: activeMessage,
+      step: activeStep,
+      totalSteps,
+      progress: activeProgress,
+      telemetry: {
+        title: activeLabel,
+        summary: activeMessage,
+        liveScores: buildGpuLiveScores({
+          activeStage,
+          graphicsScore: liveGraphicsScore,
+          computeScore: liveComputeScore,
+          sustainedScore: liveSustainedScore,
+        }),
+        metrics,
+        activity: buildGpuActivityEntries({
+          activeStage,
+          activeKernel,
+          throughputRatio,
+          config,
+        }),
+      },
+    });
+  };
+
+  const setActiveGpuStage = ({
+    stage,
+    label,
+    message,
+    step,
+    progress,
+    kernel = null,
+  }: {
+    stage: "warmup" | "graphics" | "compute" | "sustained" | "persisting";
+    label: string;
+    message: string;
+    step: number;
+    progress: number;
+    kernel?: GpuGraphicsKernelId | GpuComputeKernelId | "mixedLoad" | null;
+  }) => {
+    activeStage = stage;
+    activeKernel = kernel;
+    activeLabel = label;
+    activeMessage = message;
+    activeStep = step;
+    activeProgress = progress;
+    liveSnapshot = null;
+    emitGpuTelemetry();
+  };
 
   try {
-    onProgress?.({
+    setActiveGpuStage({
+      stage: "warmup",
       label: "GPU warmup",
       message: "Configuring pipelines, buffers, and shader caches on the selected adapter.",
       step: 1,
-      totalSteps,
       progress: 5,
     });
 
@@ -1145,6 +1627,10 @@ export async function runGpuBenchmark({
       harness,
       durationMs: config.warmupDurationMs,
       visibilityGuard,
+      onTick: (snapshot) => {
+        liveSnapshot = snapshot;
+        emitGpuTelemetry();
+      },
       buildBatch: (iteration) =>
         buildFullscreenBatch(harness, {
           time: iteration * 0.016,
@@ -1162,18 +1648,23 @@ export async function runGpuBenchmark({
     for (const kernel of GRAPHICS_ORDER) {
       step += 1;
 
-      onProgress?.({
+      setActiveGpuStage({
+        stage: "graphics",
         label: `Graphics: ${GPU_GRAPHICS_LABELS[kernel]}`,
         message: "Running a fixed-time graphics batch on the high-performance adapter.",
         step,
-        totalSteps,
         progress: 8 + Math.round((step / totalSteps) * 42),
+        kernel,
       });
 
       const result = await runFixedTimeStage({
         harness,
         durationMs: config.graphicsSceneDurationMs,
         visibilityGuard,
+        onTick: (snapshot) => {
+          liveSnapshot = snapshot;
+          emitGpuTelemetry();
+        },
         buildBatch: (iteration) => {
           switch (kernel) {
             case "rasterScene":
@@ -1250,23 +1741,29 @@ export async function runGpuBenchmark({
         result,
         `Measured ${GPU_GRAPHICS_LABELS[kernel].toLowerCase()} throughput under a fixed-time render budget.`,
       );
+      emitGpuTelemetry();
     }
 
     for (const kernel of COMPUTE_ORDER) {
       step += 1;
 
-      onProgress?.({
+      setActiveGpuStage({
+        stage: "compute",
         label: `Compute: ${GPU_COMPUTE_LABELS[kernel]}`,
         message: "Running compute dispatches and queue submissions under a fixed wall-clock budget.",
         step,
-        totalSteps,
         progress: 52 + Math.round((step / totalSteps) * 24),
+        kernel,
       });
 
       const result = await runFixedTimeStage({
         harness,
         durationMs: config.computeSceneDurationMs,
         visibilityGuard,
+        onTick: (snapshot) => {
+          liveSnapshot = snapshot;
+          emitGpuTelemetry();
+        },
         buildBatch: (iteration) => {
           switch (kernel) {
             case "matrixCompute":
@@ -1303,22 +1800,28 @@ export async function runGpuBenchmark({
         result,
         `Measured ${GPU_COMPUTE_LABELS[kernel].toLowerCase()} throughput with deterministic dispatch parameters.`,
       );
+      emitGpuTelemetry();
     }
 
     step += 1;
-    onProgress?.({
+    setActiveGpuStage({
+      stage: "sustained",
       label: "Sustained mixed GPU load",
       message:
         "Alternating render and compute work to capture late-run stability and power limits.",
       step,
-      totalSteps,
       progress: 84,
+      kernel: "mixedLoad",
     });
 
     const sustainedResult = await runFixedTimeStage({
       harness,
       durationMs: config.sustainedDurationMs,
       visibilityGuard,
+      onTick: (snapshot) => {
+        liveSnapshot = snapshot;
+        emitGpuTelemetry();
+      },
       buildBatch: (iteration) => (encoder) => {
         const simulationStats = buildSimulationBatch(
           harness,
@@ -1364,6 +1867,7 @@ export async function runGpuBenchmark({
       sustainedResult,
       "Combined render and compute passes under sustained GPU pressure.",
     );
+    emitGpuTelemetry();
 
     const subScores = {
       graphics: calculateGpuAggregateSubScore({
@@ -1419,11 +1923,11 @@ export async function runGpuBenchmark({
       Math.floor(sustainedMetric.throughput),
     ]);
 
-    onProgress?.({
+    setActiveGpuStage({
+      stage: "persisting",
       label: "GPU run complete",
       message: "Persisting the GPU result.",
       step: totalSteps,
-      totalSteps,
       progress: 96,
     });
 
