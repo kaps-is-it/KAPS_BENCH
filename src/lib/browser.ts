@@ -10,24 +10,6 @@ export function getBenchmarkSupportState(
   benchmarkKind: BenchmarkKind,
   capabilities: CapabilityFlags,
 ): BenchmarkSupportState {
-  if (typeof window !== "undefined") {
-    const coarsePointer =
-      typeof window.matchMedia === "function"
-        ? window.matchMedia("(pointer: coarse)").matches
-        : false;
-    const narrowViewport = window.innerWidth < 1024;
-    const likelyTouchFirst = coarsePointer && narrowViewport;
-
-    if (likelyTouchFirst) {
-      return {
-        supported: false,
-        mobileBlocked: true,
-        reason:
-          "Can I Run This is desktop-first. Use a laptop or desktop browser for accurate results.",
-      };
-    }
-  }
-
   if (benchmarkKind === "cpu") {
     if (!capabilities.webAssembly || !capabilities.worker) {
       return {
@@ -57,7 +39,7 @@ export function getBenchmarkSupportState(
       supported: false,
       mobileBlocked: false,
       reason:
-        "The GPU benchmark requires WebGPU. Use the latest Chrome or Edge on desktop hardware with WebGPU enabled.",
+        "The GPU benchmark requires WebGPU. Use a browser and device with WebGPU enabled.",
     };
   }
 

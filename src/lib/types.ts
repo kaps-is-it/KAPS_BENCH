@@ -299,3 +299,7 @@ export type PersistedBenchmarkResult =
   | PersistedCpuBenchmarkResult
   | PersistedGpuBenchmarkResult
   | LegacyCodingPersistedBenchmarkResult;
+
+export type BenchmarkDisplayResult =
+  | ActiveBenchmarkResult
+  | PersistedBenchmarkResult;

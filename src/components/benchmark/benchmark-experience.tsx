@@ -33,6 +33,7 @@ import { getBenchmarkSupportState } from "@/lib/browser";
 import { formatApproxMemory } from "@/lib/format-memory";
 import { detectDeviceProfile } from "@/lib/hardware-detect";
 import type {
+  BenchmarkDisplayResult,
   BenchmarkKind,
   BenchmarkPreset,
   BenchmarkRunState,
@@ -60,10 +61,10 @@ const BENCHMARK_COPY: Record<
     intro:
       "Comprehensive evaluation for modern CPU architectures. You can run the full suite or isolate the single-core and multi-core sections independently.",
     requirements: [
-      "Desktop browser required",
       "WebAssembly + Workers",
       "Cross-origin isolation",
-      "Keep the tab visible for the full run",
+      "Keep the tab visible",
+      "Keep the device awake",
     ],
     stages: [
       "Warmup",
@@ -79,10 +80,10 @@ const BENCHMARK_COPY: Record<
     intro:
       "Long-form graphics and compute benchmarking through WebGPU. The public run covers graphics throughput, compute throughput, and sustained mixed-load stability.",
     requirements: [
-      "Desktop browser required",
       "WebGPU support",
       "High-performance adapter preferred",
-      "Keep the tab visible for the full run",
+      "Keep the tab visible",
+      "Keep the device awake",
     ],
     stages: [
       "Pipeline warmup",
@@ -116,12 +117,15 @@ function getPreviewCards(benchmarkKind: BenchmarkKind) {
   ] as const;
 }
 
-function getStatusLabel(runState: BenchmarkRunState) {
+function getStatusLabel(
+  runState: BenchmarkRunState,
+  hasLocalOnlyResult = false,
+) {
   switch (runState) {
     case "running":
       return "Benchmark active";
     case "completed":
-      return "Result saved";
+      return hasLocalOnlyResult ? "Local result ready" : "Result saved";
     case "error":
       return "Run interrupted";
     case "detecting":
@@ -129,6 +133,29 @@ function getStatusLabel(runState: BenchmarkRunState) {
     default:
       return "Waiting for data";
   }
+}
+
+function getPreviewScores(
+  benchmarkKind: BenchmarkKind,
+  result: BenchmarkDisplayResult | null,
+) {
+  if (benchmarkKind === "cpu" && result?.benchmarkKind === "cpu") {
+    return [
+      result.singleCoreScore,
+      result.multiCoreScore,
+      result.sustainedScore,
+    ] as const;
+  }
+
+  if (benchmarkKind === "gpu" && result?.benchmarkKind === "gpu") {
+    return [
+      result.graphicsScore,
+      result.computeScore,
+      result.sustainedScore,
+    ] as const;
+  }
+
+  return [null, null, null] as const;
 }
 
 export function BenchmarkExperience({
@@ -154,6 +181,7 @@ export function BenchmarkExperience({
     error,
     progress,
     reset,
+    result,
     runState,
     setDeviceProfile,
     setError,
@@ -164,6 +192,7 @@ export function BenchmarkExperience({
   const [supportMessage, setSupportMessage] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [selectedCpuRunMode, setSelectedCpuRunMode] = useState<CpuRunMode>("full");
+  const [submissionWarning, setSubmissionWarning] = useState<string | null>(null);
 
   function getSupport(profileCapabilities: CapabilityFlags) {
     if (isMockRun) {
@@ -185,6 +214,11 @@ export function BenchmarkExperience({
   const support = deviceProfile ? getSupport(deviceProfile.capabilities) : null;
   const memorySummary = formatApproxMemory(deviceProfile?.deviceMemoryGb);
   const previewCards = getPreviewCards(benchmarkKind);
+  const previewScores = getPreviewScores(benchmarkKind, result);
+  const hasLocalOnlyResult =
+    runState === "completed" &&
+    Boolean(submissionWarning) &&
+    result?.benchmarkKind === benchmarkKind;
   const cpuModeDuration =
     selectedCpuRunMode === "full" ? copy.duration : "3-5 minutes";
   const visibleStages =
@@ -243,10 +277,13 @@ export function BenchmarkExperience({
         setSelectedCpuRunMode(cpuRunMode);
       }
 
+      setError(null);
+      setSubmissionWarning(null);
+      setResult(null);
       setRunState("running");
       setProgress(24, "Preparing run", "Loading benchmark runtime.");
 
-      const result =
+      const benchmarkResult =
         benchmarkKind === "cpu"
           ? await runCpuBenchmark({
               preset,
@@ -264,31 +301,46 @@ export function BenchmarkExperience({
               },
             });
 
+      setResult(benchmarkResult);
+
       setProgress(98, "Persisting result", "Submitting the result payload.");
       setIsSubmitting(true);
 
       const payload =
-        result.benchmarkKind === "cpu"
+        benchmarkResult.benchmarkKind === "cpu"
           ? {
               benchmarkKind: "cpu" as const,
               deviceProfile,
-              result,
-              benchmarkVersion: result.benchmarkVersion,
+              result: benchmarkResult,
+              benchmarkVersion: benchmarkResult.benchmarkVersion,
             }
           : {
               benchmarkKind: "gpu" as const,
               deviceProfile,
-              result,
-              benchmarkVersion: result.benchmarkVersion,
+              result: benchmarkResult,
+              benchmarkVersion: benchmarkResult.benchmarkVersion,
             };
 
-      const persisted = await submitBenchmarkResult(payload, accessToken);
+      try {
+        const persisted = await submitBenchmarkResult(payload, accessToken);
 
-      setResult(persisted);
-      setRunState("completed");
-      setProgress(100, "Completed", "Result saved successfully.");
-      router.push(`/results/${persisted.id}`);
+        setResult(persisted);
+        setRunState("completed");
+        setProgress(100, "Completed", "Result saved successfully.");
+        router.push(`/results/${persisted.id}`);
+      } catch {
+        setRunState("completed");
+        setProgress(
+          100,
+          "Completed locally",
+          "Benchmark scores are available below, but the result could not be saved.",
+        );
+        setSubmissionWarning(
+          "Your scores weren't pushed to the leaderboard. The scores shown below are still available on this page.",
+        );
+      }
     } catch (runError) {
+      setResult(null);
       setProgress(
         progress,
         "Submission failed",
@@ -472,6 +524,12 @@ export function BenchmarkExperience({
                 ) : null}
               </div>
 
+              {submissionWarning ? (
+                <div className="rounded-[1.6rem] border border-amber-200 bg-amber-50 px-5 py-4 text-sm leading-7 text-amber-900">
+                  {submissionWarning}
+                </div>
+              ) : null}
+
               {supportMessage ? (
                 <div className="rounded-[1.6rem] border border-amber-200 bg-amber-50 px-5 py-4 text-sm leading-7 text-amber-900">
                   {supportMessage}
@@ -490,7 +548,7 @@ export function BenchmarkExperience({
               <div>
                 <h2 className="section-heading">Results Preview</h2>
                 <p className="mt-2 text-sm uppercase tracking-[0.18em] text-slate-400">
-                  {getStatusLabel(runState)}
+                  {getStatusLabel(runState, hasLocalOnlyResult)}
                 </p>
               </div>
               <div className="metric-chip">
@@ -514,21 +572,47 @@ export function BenchmarkExperience({
                     />
                   </div>
                   <div className="flex min-h-[14rem] flex-col items-center justify-center text-center">
-                    <div className="flex size-28 items-center justify-center rounded-full border-4 border-dashed border-slate-200 bg-slate-50">
-                      {index === 0 ? (
-                        <BarChart3 className="size-10 text-slate-300" />
-                      ) : index === 1 ? (
-                        <Layers3 className="size-10 text-slate-300" />
-                      ) : (
-                        <Zap className="size-10 text-slate-300" />
-                      )}
-                    </div>
-                    <p className="mt-7 text-xl font-medium text-slate-500">--</p>
-                    <p className="mt-4 max-w-xs text-base leading-7 text-slate-400">
-                      {runState === "running"
-                        ? "Benchmark active. Scores will appear after the selected run completes."
-                        : "Run benchmark to see score."}
-                    </p>
+                    {previewScores[index] !== null ? (
+                      <>
+                        <div className="flex size-28 items-center justify-center rounded-full border-4 border-primary/15 bg-primary/5">
+                          {index === 0 ? (
+                            <BarChart3 className="size-10 text-primary" />
+                          ) : index === 1 ? (
+                            <Layers3 className="size-10 text-primary" />
+                          ) : (
+                            <Zap className="size-10 text-primary" />
+                          )}
+                        </div>
+                        <p className="mt-7 text-5xl font-semibold tracking-[-0.06em] text-slate-950">
+                          {previewScores[index]?.toLocaleString()}
+                        </p>
+                        <p className="mt-4 max-w-xs text-base leading-7 text-slate-500">
+                          {submissionWarning
+                            ? "Stored locally on this page. Leaderboard sync failed for this run."
+                            : "Captured from the latest benchmark run."}
+                        </p>
+                      </>
+                    ) : (
+                      <>
+                        <div className="flex size-28 items-center justify-center rounded-full border-4 border-dashed border-slate-200 bg-slate-50">
+                          {index === 0 ? (
+                            <BarChart3 className="size-10 text-slate-300" />
+                          ) : index === 1 ? (
+                            <Layers3 className="size-10 text-slate-300" />
+                          ) : (
+                            <Zap className="size-10 text-slate-300" />
+                          )}
+                        </div>
+                        <p className="mt-7 text-xl font-medium text-slate-500">--</p>
+                        <p className="mt-4 max-w-xs text-base leading-7 text-slate-400">
+                          {runState === "running"
+                            ? "Benchmark active. Scores will appear after the selected run completes."
+                            : result && result.benchmarkKind === "cpu"
+                              ? "This score was not part of the selected CPU run."
+                              : "Run benchmark to see score."}
+                        </p>
+                      </>
+                    )}
                   </div>
                   <div className="mt-6 h-4 rounded-full bg-slate-100" />
                   <div className="mt-4 h-4 w-2/3 rounded-full bg-slate-100" />

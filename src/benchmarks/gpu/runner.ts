@@ -33,6 +33,7 @@ type GpuHarness = {
   context: GPUCanvasContext;
   device: GPUDevice;
   format: GPUTextureFormat;
+  renderTarget: GPUTexture;
   timestampQuerySupported: boolean;
   renderUniformBuffer: GPUBuffer;
   computeUniformBuffer: GPUBuffer;
@@ -165,6 +166,11 @@ async function createGpuHarness(
     device,
     format,
     alphaMode: "opaque",
+  });
+  const renderTarget = device.createTexture({
+    size: [width, height, 1],
+    format,
+    usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
   });
 
   const renderShader = device.createShaderModule({
@@ -533,6 +539,7 @@ async function createGpuHarness(
     context,
     device,
     format,
+    renderTarget,
     timestampQuerySupported,
     renderUniformBuffer,
     computeUniformBuffer,
@@ -557,6 +564,7 @@ async function createGpuHarness(
     simulationBindGroup,
     cleanup() {
       canvas.remove();
+      renderTarget.destroy();
       matrixLeft.destroy();
       matrixRight.destroy();
       matrixOutput.destroy();
@@ -667,28 +675,36 @@ function buildInstancedBatch(
     loops: number;
     instanceCount: number;
     clearColor: GPUColor;
+    passes?: number;
   },
 ) {
   return (encoder: GPUCommandEncoder): BatchStats => {
     writeRenderUniforms(harness.device, harness.renderUniformBuffer, params);
-    const view = harness.context.getCurrentTexture().createView();
-    const pass = encoder.beginRenderPass({
-      colorAttachments: [
-        {
-          view,
-          clearValue: params.clearColor,
-          loadOp: "clear",
-          storeOp: "store",
-        },
-      ],
-    });
-    pass.setPipeline(harness.instancedPipeline);
-    pass.setBindGroup(0, harness.renderBindGroup);
-    pass.draw(3, params.instanceCount);
-    pass.end();
+    const view = harness.renderTarget.createView();
+
+    for (let passIndex = 0; passIndex < (params.passes ?? 1); passIndex += 1) {
+      const pass = encoder.beginRenderPass({
+        colorAttachments: [
+          {
+            view,
+            clearValue: params.clearColor,
+            loadOp: passIndex === 0 ? "clear" : "load",
+            storeOp: "store",
+          },
+        ],
+      });
+      pass.setPipeline(harness.instancedPipeline);
+      pass.setBindGroup(0, harness.renderBindGroup);
+      pass.draw(3, params.instanceCount);
+      pass.end();
+    }
 
     return {
-      workUnits: params.instanceCount * Math.max(params.loops, 1) * 3,
+      workUnits:
+        params.instanceCount *
+        Math.max(params.loops, 1) *
+        3 *
+        (params.passes ?? 1),
       checksum: Math.floor(params.time * 1000) ^ params.instanceCount,
     };
   };
@@ -707,7 +723,7 @@ function buildFullscreenBatch(
 ) {
   return (encoder: GPUCommandEncoder): BatchStats => {
     writeRenderUniforms(harness.device, harness.renderUniformBuffer, params);
-    const view = harness.context.getCurrentTexture().createView();
+    const view = harness.renderTarget.createView();
 
     for (let passIndex = 0; passIndex < (params.passes ?? 1); passIndex += 1) {
       const pass = encoder.beginRenderPass({
@@ -715,7 +731,7 @@ function buildFullscreenBatch(
           {
             view,
             clearValue: params.clearColor,
-            loadOp: "clear",
+            loadOp: passIndex === 0 ? "clear" : "load",
             storeOp: "store",
           },
         ],
@@ -741,6 +757,7 @@ function buildMatrixBatch(
   harness: GpuHarness,
   matrixSize: number,
   step: number,
+  dispatchRepeats = 1,
 ) {
   return (encoder: GPUCommandEncoder): BatchStats => {
     writeComputeUniforms(harness.device, harness.computeUniformBuffer, {
@@ -751,11 +768,13 @@ function buildMatrixBatch(
     const pass = encoder.beginComputePass();
     pass.setPipeline(harness.matrixPipeline);
     pass.setBindGroup(0, harness.matrixBindGroup);
-    pass.dispatchWorkgroups(Math.ceil(matrixSize / 8), Math.ceil(matrixSize / 8));
+    for (let repeat = 0; repeat < dispatchRepeats; repeat += 1) {
+      pass.dispatchWorkgroups(Math.ceil(matrixSize / 8), Math.ceil(matrixSize / 8));
+    }
     pass.end();
 
     return {
-      workUnits: matrixSize * matrixSize * matrixSize * 2,
+      workUnits: matrixSize * matrixSize * matrixSize * 2 * dispatchRepeats,
       checksum: matrixSize ^ step,
     };
   };
@@ -765,6 +784,7 @@ function buildConvolutionBatch(
   harness: GpuHarness,
   size: number,
   step: number,
+  dispatchRepeats = 1,
 ) {
   return (encoder: GPUCommandEncoder): BatchStats => {
     writeComputeUniforms(harness.device, harness.computeUniformBuffer, {
@@ -775,11 +795,13 @@ function buildConvolutionBatch(
     const pass = encoder.beginComputePass();
     pass.setPipeline(harness.convolutionPipeline);
     pass.setBindGroup(0, harness.convolutionBindGroup);
-    pass.dispatchWorkgroups(Math.ceil(size / 8), Math.ceil(size / 8));
+    for (let repeat = 0; repeat < dispatchRepeats; repeat += 1) {
+      pass.dispatchWorkgroups(Math.ceil(size / 8), Math.ceil(size / 8));
+    }
     pass.end();
 
     return {
-      workUnits: size * size * 9,
+      workUnits: size * size * 9 * dispatchRepeats,
       checksum: size ^ (step * 3),
     };
   };
@@ -789,6 +811,7 @@ function buildSimulationBatch(
   harness: GpuHarness,
   particleCount: number,
   step: number,
+  dispatchRepeats = 1,
 ) {
   return (encoder: GPUCommandEncoder): BatchStats => {
     writeComputeUniforms(harness.device, harness.computeUniformBuffer, {
@@ -799,11 +822,13 @@ function buildSimulationBatch(
     const pass = encoder.beginComputePass();
     pass.setPipeline(harness.simulationPipeline);
     pass.setBindGroup(0, harness.simulationBindGroup);
-    pass.dispatchWorkgroups(Math.ceil(particleCount / 64));
+    for (let repeat = 0; repeat < dispatchRepeats; repeat += 1) {
+      pass.dispatchWorkgroups(Math.ceil(particleCount / 64));
+    }
     pass.end();
 
     return {
-      workUnits: particleCount * 16,
+      workUnits: particleCount * 16 * dispatchRepeats,
       checksum: particleCount ^ (step * 5),
     };
   };
@@ -1126,6 +1151,7 @@ export async function runGpuBenchmark({
           amplitude: 0.8,
           scale: 0.012,
           loops: Math.max(8, config.renderBatch.shadingLoops / 2),
+          passes: 3,
           clearColor: { r: 0.06, g: 0.08, b: 0.12, a: 1 },
         }),
     });
@@ -1155,7 +1181,8 @@ export async function runGpuBenchmark({
                 time: iteration * 0.013,
                 amplitude: 0.55,
                 scale: 0.55,
-                loops: 4,
+                loops: 6,
+                passes: 3,
                 instanceCount: config.renderBatch.rasterInstances,
                 clearColor: { r: 0.03, g: 0.04, b: 0.06, a: 1 },
               });
@@ -1165,6 +1192,7 @@ export async function runGpuBenchmark({
                 amplitude: 0.7,
                 scale: 0.02,
                 loops: config.renderBatch.shadingLoops,
+                passes: 4,
                 clearColor: { r: 0.02, g: 0.02, b: 0.03, a: 1 },
               });
             case "instancingScene":
@@ -1172,7 +1200,8 @@ export async function runGpuBenchmark({
                 time: iteration * 0.017,
                 amplitude: 0.95,
                 scale: 0.75,
-                loops: 8,
+                loops: 10,
+                passes: 3,
                 instanceCount: config.renderBatch.instancingInstances,
                 clearColor: { r: 0.02, g: 0.03, b: 0.04, a: 1 },
               });
@@ -1182,12 +1211,14 @@ export async function runGpuBenchmark({
                   harness,
                   config.computeBatch.simulationParticles,
                   iteration,
+                  3,
                 )(encoder);
                 const renderStats = buildInstancedBatch(harness, {
                   time: iteration * 0.021,
                   amplitude: 1.2,
                   scale: 0.35,
-                  loops: 6,
+                  loops: 8,
+                  passes: 2,
                   instanceCount: config.renderBatch.particleInstances,
                   clearColor: { r: 0.015, g: 0.02, b: 0.03, a: 1 },
                 })(encoder);
@@ -1203,7 +1234,7 @@ export async function runGpuBenchmark({
                 amplitude: 0.8,
                 scale: 0.012,
                 loops: config.renderBatch.postProcessLoops,
-                passes: 2,
+                passes: 4,
                 clearColor: { r: 0.01, g: 0.015, b: 0.02, a: 1 },
               });
             default:
@@ -1243,18 +1274,21 @@ export async function runGpuBenchmark({
                 harness,
                 config.computeBatch.matrixSize,
                 iteration,
+                4,
               );
             case "convolutionCompute":
               return buildConvolutionBatch(
                 harness,
                 config.computeBatch.convolutionSize,
                 iteration,
+                3,
               );
             case "simulationCompute":
               return buildSimulationBatch(
                 harness,
                 config.computeBatch.simulationParticles,
                 iteration,
+                5,
               );
             default:
               throw new Error(`Unsupported compute kernel: ${kernel}`);
@@ -1290,12 +1324,14 @@ export async function runGpuBenchmark({
           harness,
           config.computeBatch.simulationParticles,
           iteration,
+          4,
         )(encoder);
         const rasterStats = buildInstancedBatch(harness, {
           time: iteration * 0.012,
           amplitude: 0.9,
           scale: 0.6,
-          loops: 6,
+          loops: 8,
+          passes: 2,
           instanceCount: config.renderBatch.instancingInstances,
           clearColor: { r: 0.02, g: 0.025, b: 0.03, a: 1 },
         })(encoder);
@@ -1304,6 +1340,7 @@ export async function runGpuBenchmark({
           amplitude: 0.7,
           scale: 0.02,
           loops: Math.max(10, config.renderBatch.postProcessLoops / 2),
+          passes: 3,
           clearColor: { r: 0.02, g: 0.025, b: 0.03, a: 1 },
         })(encoder);
 

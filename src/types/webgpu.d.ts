@@ -66,6 +66,7 @@ interface GPUQueue {
 
 interface GPUTexture {
   createView(): GPUTextureView;
+  destroy(): void;
 }
 
 interface GPUCanvasContext {
@@ -77,6 +78,7 @@ interface GPUDevice {
   queue: GPUQueue;
   createShaderModule(descriptor: object): GPUShaderModule;
   createBuffer(descriptor: object): GPUBuffer;
+  createTexture(descriptor: object): GPUTexture;
   createBindGroupLayout(descriptor: object): GPUBindGroupLayout;
   createPipelineLayout(descriptor: object): GPUPipelineLayout;
   createRenderPipeline(descriptor: object): GPURenderPipeline;
@@ -112,6 +114,12 @@ declare const GPUBufferUsage: {
   COPY_SRC: number;
   MAP_READ: number;
   QUERY_RESOLVE: number;
+};
+
+declare const GPUTextureUsage: {
+  RENDER_ATTACHMENT: number;
+  COPY_SRC: number;
+  TEXTURE_BINDING: number;
 };
 
 declare const GPUShaderStage: {

@@ -1,8 +1,8 @@
 import { create } from "zustand";
 import type {
+  BenchmarkDisplayResult,
   BenchmarkRunState,
   DeviceProfile,
-  PersistedBenchmarkResult,
 } from "@/lib/types";
 
 type BenchmarkStore = {
@@ -11,12 +11,12 @@ type BenchmarkStore = {
   currentLabel: string;
   currentMessage: string;
   deviceProfile: DeviceProfile | null;
-  result: PersistedBenchmarkResult | null;
+  result: BenchmarkDisplayResult | null;
   error: string | null;
   setRunState: (runState: BenchmarkRunState) => void;
   setProgress: (progress: number, label: string, message: string) => void;
   setDeviceProfile: (deviceProfile: DeviceProfile) => void;
-  setResult: (result: PersistedBenchmarkResult) => void;
+  setResult: (result: BenchmarkDisplayResult | null) => void;
   setError: (error: string | null) => void;
   reset: () => void;
 };
@@ -34,7 +34,11 @@ export const useBenchmarkStore = create<BenchmarkStore>((set) => ({
     set({ progress, currentLabel, currentMessage }),
   setDeviceProfile: (deviceProfile) => set({ deviceProfile, error: null }),
   setResult: (result) => set({ result }),
-  setError: (error) => set({ error, runState: "error" }),
+  setError: (error) =>
+    set((state) => ({
+      error,
+      runState: error ? "error" : state.runState,
+    })),
   reset: () =>
     set({
       runState: "idle",
