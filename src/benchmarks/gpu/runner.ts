@@ -61,6 +61,13 @@ type GpuHarness = {
 const GRAPHICS_ORDER = Object.keys(GPU_GRAPHICS_LABELS) as GpuGraphicsKernelId[];
 const COMPUTE_ORDER = Object.keys(GPU_COMPUTE_LABELS) as GpuComputeKernelId[];
 
+export function supportsCommandEncoderTimestamps(
+  encoder: GPUCommandEncoder,
+) {
+  return typeof (encoder as GPUCommandEncoder & { writeTimestamp?: unknown })
+    .writeTimestamp === "function";
+}
+
 function createSeededState(seed: number) {
   let state = seed >>> 0;
 
@@ -127,10 +134,14 @@ async function createGpuHarness(
     throw new Error("No high-performance WebGPU adapter was available.");
   }
 
-  const timestampQuerySupported = adapter.features.has("timestamp-query");
+  const adapterTimestampQuerySupported = adapter.features.has("timestamp-query");
   const device = await adapter.requestDevice({
-    requiredFeatures: timestampQuerySupported ? ["timestamp-query"] : [],
+    requiredFeatures: adapterTimestampQuerySupported ? ["timestamp-query"] : [],
   });
+  const timestampProbeEncoder = device.createCommandEncoder();
+  const timestampQuerySupported =
+    adapterTimestampQuerySupported &&
+    supportsCommandEncoderTimestamps(timestampProbeEncoder);
 
   const canvas = document.createElement("canvas");
   canvas.width = width;

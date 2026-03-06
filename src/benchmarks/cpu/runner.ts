@@ -48,6 +48,11 @@ type CpuWorkerResponse = {
   error?: string;
 };
 
+type CpuWorkerClient = {
+  runTask: (message: CpuWorkerRequest) => Promise<CpuWorkerResponse>;
+  dispose: () => void;
+};
+
 const CPU_KERNEL_ORDER = Object.keys(CPU_SUITE_LABELS) as CpuKernelId[];
 const CPU_SUSTAINED_MIX: CpuKernelId[] = [
   "integerBranchHash",
@@ -113,30 +118,73 @@ async function fetchArrayBuffer(path: string) {
   return response.arrayBuffer();
 }
 
-async function runWorkerTask(message: CpuWorkerRequest) {
+function createCpuWorkerClient(): CpuWorkerClient {
   const worker = new Worker(new URL("./worker.ts", import.meta.url), {
     type: "module",
   });
 
-  return new Promise<CpuWorkerResponse>((resolve, reject) => {
-    worker.onmessage = (event: MessageEvent<CpuWorkerResponse>) => {
-      worker.terminate();
+  let pending:
+    | {
+        resolve: (value: CpuWorkerResponse) => void;
+        reject: (reason?: unknown) => void;
+      }
+    | null = null;
 
-      if (event.data.error) {
-        reject(new Error(event.data.error));
-        return;
+  worker.onmessage = (event: MessageEvent<CpuWorkerResponse>) => {
+    const activeTask = pending;
+    pending = null;
+
+    if (!activeTask) {
+      return;
+    }
+
+    if (event.data.error) {
+      activeTask.reject(new Error(event.data.error));
+      return;
+    }
+
+    activeTask.resolve(event.data);
+  };
+
+  worker.onerror = (event) => {
+    const activeTask = pending;
+    pending = null;
+
+    if (activeTask) {
+      activeTask.reject(event.error ?? new Error("CPU benchmark worker crashed."));
+    }
+  };
+
+  return {
+    runTask(message) {
+      if (pending) {
+        return Promise.reject(
+          new Error("CPU benchmark worker received overlapping work."),
+        );
       }
 
-      resolve(event.data);
-    };
+      return new Promise<CpuWorkerResponse>((resolve, reject) => {
+        pending = { resolve, reject };
+        worker.postMessage(message);
+      });
+    },
+    dispose() {
+      const activeTask = pending;
+      pending = null;
 
-    worker.onerror = (event) => {
+      if (activeTask) {
+        activeTask.reject(
+          new Error("CPU benchmark worker was terminated before completion."),
+        );
+      }
+
       worker.terminate();
-      reject(event.error ?? new Error("CPU benchmark worker crashed."));
-    };
+    },
+  };
+}
 
-    worker.postMessage(message);
-  });
+function createCpuWorkerPool(workerCount: number) {
+  return Array.from({ length: workerCount }, () => createCpuWorkerClient());
 }
 
 function kernelMetricFromResponse(response: CpuWorkerResponse): CpuKernelMetric {
@@ -227,6 +275,7 @@ export async function runCpuBenchmark({
   const wasmBytes = await fetchArrayBuffer(config.assetPaths.wasmModule);
   const cancelSignal = createCancelBuffer();
   const visibilityGuard = createVisibilityGuard(() => cancelSignal.cancel());
+  const workerPool = createCpuWorkerPool(workerCount);
   let singleCoreMetrics: Record<CpuKernelId, CpuKernelMetric> | null = null;
   let multiCoreMetrics: Record<CpuKernelId, CpuKernelMetric> | null = null;
   let sustainedMetric: CpuKernelMetric | null = null;
@@ -237,26 +286,30 @@ export async function runCpuBenchmark({
       label: "Warmup",
       message:
         runMode === "full"
-          ? "Priming workers, WASM, and memory pages for the full CPU run."
-          : "Priming workers, WASM, and memory pages for the selected CPU run.",
+          ? `Priming ${workerCount} workers, WASM, and memory pages for the full CPU run.`
+          : `Priming ${workerCount} worker${workerCount > 1 ? "s" : ""} for the selected CPU run.`,
       step: 1,
       totalSteps,
       progress: 5,
     });
 
-    await runWorkerTask({
-      type: "run-kernel",
-      kernel: "integerBranchHash",
-      durationMs: config.warmupDurationMs,
-      workerIndex: 0,
-      seed: 71,
-      sizes: config.dataScale,
-      wasmModule: wasmBytes.slice(0),
-      cancelBuffer: cancelSignal.buffer,
-    });
+    await Promise.all(
+      workerPool.map((worker, workerIndex) =>
+        worker.runTask({
+          type: "run-kernel",
+          kernel: "integerBranchHash",
+          durationMs: config.warmupDurationMs,
+          workerIndex,
+          seed: 71 + workerIndex * 13,
+          sizes: config.dataScale,
+          cancelBuffer: cancelSignal.buffer,
+        }),
+      ),
+    );
     visibilityGuard.assertVisible();
 
     let step = 1;
+    const primaryWorker = workerPool[0];
 
     if (runMode !== "multiCore") {
       singleCoreMetrics = {} as Record<CpuKernelId, CpuKernelMetric>;
@@ -272,7 +325,7 @@ export async function runCpuBenchmark({
           progress: 5 + Math.round((step / totalSteps) * 85),
         });
 
-        const response = await runWorkerTask({
+        const response = await primaryWorker.runTask({
           type: "run-kernel",
           kernel,
           durationMs: config.singleCoreKernelDurationMs,
@@ -304,8 +357,8 @@ export async function runCpuBenchmark({
 
         const stageStartedAt = performance.now();
         const responses = await Promise.all(
-          Array.from({ length: workerCount }, (_, workerIndex) =>
-            runWorkerTask({
+          workerPool.map((worker, workerIndex) =>
+            worker.runTask({
               type: "run-kernel",
               kernel,
               durationMs: config.multiCoreKernelDurationMs,
@@ -341,10 +394,10 @@ export async function runCpuBenchmark({
 
       const sustainedStartedAt = performance.now();
       const sustainedResponses = await Promise.all(
-        Array.from({ length: workerCount }, (_, workerIndex) => {
+        workerPool.map((worker, workerIndex) => {
           const kernel = CPU_SUSTAINED_MIX[workerIndex % CPU_SUSTAINED_MIX.length];
 
-          return runWorkerTask({
+          return worker.runTask({
             type: "run-kernel",
             kernel,
             durationMs: config.sustainedDurationMs,
@@ -520,6 +573,7 @@ export async function runCpuBenchmark({
   } finally {
     visibilityGuard.cleanup();
     cancelSignal.cancel();
+    workerPool.forEach((worker) => worker.dispose());
   }
 }
 
