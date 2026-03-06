@@ -1,5 +1,8 @@
 import { RESULT_RATING_BANDS } from "@/lib/branding";
 
+export const MIN_BENCHMARK_SCORE = 150;
+export const MAX_BENCHMARK_SCORE = 50_000;
+
 export function roundMetric(value: number, precision = 2) {
   if (!Number.isFinite(value)) {
     return 0;
@@ -33,7 +36,12 @@ export function weightedGeometricMean(
 }
 
 export function scoreFromRatio(ratio: number, anchorScore = 5000) {
-  return Math.max(150, Math.round(anchorScore * Math.max(ratio, 0.05)));
+  const rawScore = Math.round(anchorScore * Math.max(ratio, 0.05));
+
+  return Math.min(
+    MAX_BENCHMARK_SCORE,
+    Math.max(MIN_BENCHMARK_SCORE, rawScore),
+  );
 }
 
 export function getRatingForScore(score: number) {
