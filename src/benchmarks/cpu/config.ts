@@ -32,9 +32,10 @@ export const CPU_AGGREGATE_WEIGHTS = {
 
 export const CPU_SCORE_CURVES = {
   singleCore: {
-    anchorScore: 280,
+    anchorScore: 135,
     anchorRatio: 250,
-    exponent: 0.74,
+    exponent: 0.82,
+    minScore: 10,
   },
   multiCore: {
     anchorScore: 1000,
@@ -62,10 +63,10 @@ export const CPU_HEADLINE_RATING_BANDS: readonly RatingBand[] = [
 ] as const;
 
 export const CPU_SINGLE_CORE_RATING_BANDS: readonly RatingBand[] = [
-  { min: 280, label: "Flagship" },
-  { min: 230, label: "High-End" },
-  { min: 185, label: "Performance" },
-  { min: 150, label: "Capable" },
+  { min: 135, label: "Flagship" },
+  { min: 110, label: "High-End" },
+  { min: 84, label: "Performance" },
+  { min: 51, label: "Capable" },
   { min: 0, label: "Entry" },
 ] as const;
 

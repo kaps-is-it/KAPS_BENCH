@@ -99,20 +99,33 @@ function createCancelBuffer() {
   };
 }
 
-function createVisibilityGuard(cancel: () => void) {
+function createVisibilityGuard(cancel?: () => void, abortSignal?: AbortSignal) {
   let hidden = false;
+  let aborted = false;
 
   const handleVisibilityChange = () => {
     if (document.visibilityState !== "visible") {
       hidden = true;
-      cancel();
+      cancel?.();
     }
   };
 
+  const handleAbort = () => {
+    aborted = true;
+    cancel?.();
+  };
+
   document.addEventListener("visibilitychange", handleVisibilityChange);
+  if (abortSignal) {
+    abortSignal.addEventListener("abort", handleAbort);
+    if (abortSignal.aborted) handleAbort();
+  }
 
   return {
     assertVisible() {
+      if (aborted) {
+        throw new Error("The benchmark was stopped by the user.");
+      }
       if (hidden || document.visibilityState !== "visible") {
         throw new Error(
           "The benchmark was aborted because the tab became hidden. Keep this tab visible for the full run.",
@@ -120,10 +133,13 @@ function createVisibilityGuard(cancel: () => void) {
       }
     },
     passed() {
-      return !hidden && document.visibilityState === "visible";
+      return !hidden && !aborted && document.visibilityState === "visible";
     },
     cleanup() {
       document.removeEventListener("visibilitychange", handleVisibilityChange);
+      if (abortSignal) {
+        abortSignal.removeEventListener("abort", handleAbort);
+      }
     },
   };
 }
@@ -147,9 +163,9 @@ function createCpuWorkerClient(
 
   let pending:
     | {
-        resolve: (value: CpuWorkerResponse) => void;
-        reject: (reason?: unknown) => void;
-      }
+      resolve: (value: CpuWorkerResponse) => void;
+      reject: (reason?: unknown) => void;
+    }
     | null = null;
 
   worker.onmessage = (event: MessageEvent<CpuWorkerMessage>) => {
@@ -447,11 +463,13 @@ export async function runCpuBenchmark({
   onProgress,
   mock = false,
   runMode = "full",
+  abortSignal,
 }: {
   preset?: BenchmarkPreset;
   onProgress?: (update: BenchmarkProgressUpdate) => void;
   mock?: boolean;
   runMode?: CpuRunMode;
+  abortSignal?: AbortSignal;
 }): Promise<CpuBenchmarkResult> {
   const resolvedPreset = resolveBenchmarkPreset(preset);
   const config = getCpuPreset(resolvedPreset);
@@ -492,7 +510,7 @@ export async function runCpuBenchmark({
   const workerCount = runMode === "singleCore" ? 1 : maxWorkerCount;
   const wasmBytes = await fetchArrayBuffer(config.assetPaths.wasmModule);
   const cancelSignal = createCancelBuffer();
-  const visibilityGuard = createVisibilityGuard(() => cancelSignal.cancel());
+  const visibilityGuard = createVisibilityGuard(() => cancelSignal.cancel(), abortSignal);
   let singleCoreMetrics: Record<CpuKernelId, CpuKernelMetric> | null = null;
   let multiCoreMetrics: Record<CpuKernelId, CpuKernelMetric> | null = null;
   let sustainedMetric: CpuKernelMetric | null = null;
@@ -529,41 +547,41 @@ export async function runCpuBenchmark({
         ? null
         : activeStage === "singleCore"
           ? {
-              id: activeKernel as CpuKernelId,
-              label: CPU_SUITE_LABELS[activeKernel as CpuKernelId],
-              throughput: roundMetric(totalThroughput),
-              iterations: totalIterations,
-              durationMs: roundMetric(elapsedMs),
-              workerCount: 1,
-              unit: "work units/s",
-              checksum: snapshots[0]?.checksum ?? 0,
-              notes: snapshots[0]?.notes ?? "",
-            }
+            id: activeKernel as CpuKernelId,
+            label: CPU_SUITE_LABELS[activeKernel as CpuKernelId],
+            throughput: roundMetric(totalThroughput),
+            iterations: totalIterations,
+            durationMs: roundMetric(elapsedMs),
+            workerCount: 1,
+            unit: "work units/s",
+            checksum: snapshots[0]?.checksum ?? 0,
+            notes: snapshots[0]?.notes ?? "",
+          }
           : {
-              id: "memoryStencil",
-              label:
-                activeStage === "sustained"
-                  ? "Mixed sustained CPU load"
-                  : CPU_SUITE_LABELS[activeKernel as CpuKernelId],
-              throughput: roundMetric(totalThroughput),
-              iterations: totalIterations,
-              durationMs: roundMetric(elapsedMs),
-              workerCount: Math.max(1, snapshots.length),
-              unit: "work units/s",
-              checksum: combineChecksums(snapshots.map((snapshot) => snapshot.checksum)),
-              notes:
-                activeStage === "sustained"
-                  ? "Round-robin mixed burn across the current worker pool."
-                  : `${snapshots.length} workers streaming telemetry for ${CPU_SUITE_LABELS[activeKernel as CpuKernelId].toLowerCase()}.`,
-            };
+            id: "memoryStencil",
+            label:
+              activeStage === "sustained"
+                ? "Mixed sustained CPU load"
+                : CPU_SUITE_LABELS[activeKernel as CpuKernelId],
+            throughput: roundMetric(totalThroughput),
+            iterations: totalIterations,
+            durationMs: roundMetric(elapsedMs),
+            workerCount: Math.max(1, snapshots.length),
+            unit: "work units/s",
+            checksum: combineChecksums(snapshots.map((snapshot) => snapshot.checksum)),
+            notes:
+              activeStage === "sustained"
+                ? "Round-robin mixed burn across the current worker pool."
+                : `${snapshots.length} workers streaming telemetry for ${CPU_SUITE_LABELS[activeKernel as CpuKernelId].toLowerCase()}.`,
+          };
     const liveSingleCoreScore = estimateCpuAggregateScore(
       "singleCore",
       "Single-core",
       activeStage === "singleCore" && activeMetric
         ? {
-            ...(singleCoreMetrics ?? {}),
-            [activeKernel as CpuKernelId]: activeMetric,
-          }
+          ...(singleCoreMetrics ?? {}),
+          [activeKernel as CpuKernelId]: activeMetric,
+        }
         : singleCoreMetrics ?? {},
       config.referenceThroughputs.singleCore,
       1,
@@ -573,9 +591,9 @@ export async function runCpuBenchmark({
       "Multi-core",
       activeStage === "multiCore" && activeMetric
         ? {
-            ...(multiCoreMetrics ?? {}),
-            [activeKernel as CpuKernelId]: activeMetric,
-          }
+          ...(multiCoreMetrics ?? {}),
+          [activeKernel as CpuKernelId]: activeMetric,
+        }
         : multiCoreMetrics ?? {},
       config.referenceThroughputs.multiCore,
       workerCount,
@@ -831,48 +849,48 @@ export async function runCpuBenchmark({
     const subScores: CpuBenchmarkSubScores = {
       singleCore: singleCoreMetrics
         ? calculateCpuAggregateSubScore({
-            id: "singleCore",
-            label: "Single-core",
-            kernels: CPU_KERNEL_ORDER.map((kernel) => ({
-              id: kernel,
-              throughput: singleCoreMetrics![kernel].throughput,
-              referenceThroughput: config.referenceThroughputs.singleCore[kernel],
-              durationMs: singleCoreMetrics![kernel].durationMs,
-              workerCount: 1,
-              notes: `Single-core ${CPU_SUITE_LABELS[kernel].toLowerCase()}.`,
-            })),
-          })
+          id: "singleCore",
+          label: "Single-core",
+          kernels: CPU_KERNEL_ORDER.map((kernel) => ({
+            id: kernel,
+            throughput: singleCoreMetrics![kernel].throughput,
+            referenceThroughput: config.referenceThroughputs.singleCore[kernel],
+            durationMs: singleCoreMetrics![kernel].durationMs,
+            workerCount: 1,
+            notes: `Single-core ${CPU_SUITE_LABELS[kernel].toLowerCase()}.`,
+          })),
+        })
         : null,
       multiCore: multiCoreMetrics
         ? calculateCpuAggregateSubScore({
-            id: "multiCore",
-            label: "Multi-core",
-            kernels: CPU_KERNEL_ORDER.map((kernel) => ({
-              id: kernel,
-              throughput: multiCoreMetrics![kernel].throughput,
-              referenceThroughput: config.referenceThroughputs.multiCore[kernel],
-              durationMs: multiCoreMetrics![kernel].durationMs,
-              workerCount,
-              notes: `Scaled ${CPU_SUITE_LABELS[kernel].toLowerCase()} across ${workerCount} workers.`,
-            })),
-          })
+          id: "multiCore",
+          label: "Multi-core",
+          kernels: CPU_KERNEL_ORDER.map((kernel) => ({
+            id: kernel,
+            throughput: multiCoreMetrics![kernel].throughput,
+            referenceThroughput: config.referenceThroughputs.multiCore[kernel],
+            durationMs: multiCoreMetrics![kernel].durationMs,
+            workerCount,
+            notes: `Scaled ${CPU_SUITE_LABELS[kernel].toLowerCase()} across ${workerCount} workers.`,
+          })),
+        })
         : null,
       sustained: sustainedMetric
         ? calculateCpuAggregateSubScore({
-            id: "sustained",
-            label: "Sustained",
-            kernels: [
-              {
-                id: "mixedBurn",
-                throughput: sustainedMetric.throughput,
-                referenceThroughput: config.referenceThroughputs.sustained,
-                durationMs: sustainedMetric.durationMs,
-                workerCount,
-                notes:
-                  "Measured the late-run steady-state CPU throughput under thermal pressure.",
-              },
-            ],
-          })
+          id: "sustained",
+          label: "Sustained",
+          kernels: [
+            {
+              id: "mixedBurn",
+              throughput: sustainedMetric.throughput,
+              referenceThroughput: config.referenceThroughputs.sustained,
+              durationMs: sustainedMetric.durationMs,
+              workerCount,
+              notes:
+                "Measured the late-run steady-state CPU throughput under thermal pressure.",
+            },
+          ],
+        })
         : null,
     };
 
@@ -881,15 +899,15 @@ export async function runCpuBenchmark({
     const checksum = combineChecksums([
       singleCoreMetrics
         ? Object.values(singleCoreMetrics).reduce(
-            (sum, metric) => (sum + metric.checksum) >>> 0,
-            0,
-          )
+          (sum, metric) => (sum + metric.checksum) >>> 0,
+          0,
+        )
         : 0,
       multiCoreMetrics
         ? Object.values(multiCoreMetrics).reduce(
-            (sum, metric) => (sum + metric.checksum) >>> 0,
-            0,
-          )
+          (sum, metric) => (sum + metric.checksum) >>> 0,
+          0,
+        )
         : 0,
       sustainedMetric?.checksum ?? 0,
     ]);
@@ -965,19 +983,19 @@ export async function runCpuBenchmark({
         warmupDurationMs: config.warmupDurationMs,
         singleCoreDurationMs: singleCoreMetrics
           ? roundMetric(
-              Object.values(singleCoreMetrics).reduce(
-                (sum, metric) => sum + metric.durationMs,
-                0,
-              ),
-            )
+            Object.values(singleCoreMetrics).reduce(
+              (sum, metric) => sum + metric.durationMs,
+              0,
+            ),
+          )
           : 0,
         multiCoreDurationMs: multiCoreMetrics
           ? roundMetric(
-              Object.values(multiCoreMetrics).reduce(
-                (sum, metric) => sum + metric.durationMs,
-                0,
-              ),
-            )
+            Object.values(multiCoreMetrics).reduce(
+              (sum, metric) => sum + metric.durationMs,
+              0,
+            ),
+          )
           : 0,
         sustainedDurationMs: sustainedMetric?.durationMs ?? 0,
         workerCount,
@@ -990,8 +1008,8 @@ export async function runCpuBenchmark({
           multiCore: multiCoreMetrics,
           sustained: sustainedMetric
             ? {
-                mixedBurn: sustainedMetric,
-              }
+              mixedBurn: sustainedMetric,
+            }
             : null,
         },
       },
@@ -1074,49 +1092,49 @@ function createMockCpuResult(
     singleCore:
       runMode !== "multiCore" && singleCoreMetrics
         ? calculateCpuAggregateSubScore({
-            id: "singleCore",
-            label: "Single-core",
-            kernels: CPU_KERNEL_ORDER.map((kernel) => ({
-              id: kernel,
-              throughput: singleCoreMetrics[kernel].throughput,
-              referenceThroughput: config.referenceThroughputs.singleCore[kernel],
-              durationMs: singleCoreMetrics[kernel].durationMs,
-              workerCount: 1,
-              notes: "Mock single-core aggregate for smoke verification.",
-            })),
-          })
+          id: "singleCore",
+          label: "Single-core",
+          kernels: CPU_KERNEL_ORDER.map((kernel) => ({
+            id: kernel,
+            throughput: singleCoreMetrics[kernel].throughput,
+            referenceThroughput: config.referenceThroughputs.singleCore[kernel],
+            durationMs: singleCoreMetrics[kernel].durationMs,
+            workerCount: 1,
+            notes: "Mock single-core aggregate for smoke verification.",
+          })),
+        })
         : null,
     multiCore:
       runMode !== "singleCore" && multiCoreMetrics
         ? calculateCpuAggregateSubScore({
-            id: "multiCore",
-            label: "Multi-core",
-            kernels: CPU_KERNEL_ORDER.map((kernel) => ({
-              id: kernel,
-              throughput: multiCoreMetrics[kernel].throughput,
-              referenceThroughput: config.referenceThroughputs.multiCore[kernel],
-              durationMs: multiCoreMetrics[kernel].durationMs,
-              workerCount,
-              notes: "Mock multi-core aggregate for smoke verification.",
-            })),
-          })
+          id: "multiCore",
+          label: "Multi-core",
+          kernels: CPU_KERNEL_ORDER.map((kernel) => ({
+            id: kernel,
+            throughput: multiCoreMetrics[kernel].throughput,
+            referenceThroughput: config.referenceThroughputs.multiCore[kernel],
+            durationMs: multiCoreMetrics[kernel].durationMs,
+            workerCount,
+            notes: "Mock multi-core aggregate for smoke verification.",
+          })),
+        })
         : null,
     sustained:
       runMode === "full" && sustainedMetric
         ? calculateCpuAggregateSubScore({
-            id: "sustained",
-            label: "Sustained",
-            kernels: [
-              {
-                id: "mixedBurn",
-                throughput: sustainedMetric.throughput,
-                referenceThroughput: config.referenceThroughputs.sustained,
-                durationMs: sustainedMetric.durationMs,
-                workerCount,
-                notes: "Mock sustained aggregate for smoke verification.",
-              },
-            ],
-          })
+          id: "sustained",
+          label: "Sustained",
+          kernels: [
+            {
+              id: "mixedBurn",
+              throughput: sustainedMetric.throughput,
+              referenceThroughput: config.referenceThroughputs.sustained,
+              durationMs: sustainedMetric.durationMs,
+              workerCount,
+              notes: "Mock sustained aggregate for smoke verification.",
+            },
+          ],
+        })
         : null,
   };
   const { cpuScore, rating } = calculateCpuScore({ runMode, subScores });
@@ -1151,15 +1169,15 @@ function createMockCpuResult(
       checksum: combineChecksums([
         singleCoreMetrics
           ? Object.values(singleCoreMetrics).reduce(
-              (sum, metric) => (sum + metric.checksum) >>> 0,
-              0,
-            )
+            (sum, metric) => (sum + metric.checksum) >>> 0,
+            0,
+          )
           : 0,
         multiCoreMetrics
           ? Object.values(multiCoreMetrics).reduce(
-              (sum, metric) => (sum + metric.checksum) >>> 0,
-              0,
-            )
+            (sum, metric) => (sum + metric.checksum) >>> 0,
+            0,
+          )
           : 0,
         sustainedMetric?.checksum ?? 0,
       ]),
@@ -1171,8 +1189,8 @@ function createMockCpuResult(
         multiCore: multiCoreMetrics,
         sustained: sustainedMetric
           ? {
-              mixedBurn: sustainedMetric,
-            }
+            mixedBurn: sustainedMetric,
+          }
           : null,
       },
     },

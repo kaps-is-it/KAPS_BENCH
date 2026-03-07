@@ -94,8 +94,9 @@ function createFloat32Data(length: number, seed: number) {
   return output;
 }
 
-function createVisibilityGuard() {
+function createVisibilityGuard(abortSignal?: AbortSignal) {
   let hidden = false;
+  let aborted = false;
 
   const handleVisibilityChange = () => {
     if (document.visibilityState !== "visible") {
@@ -103,10 +104,21 @@ function createVisibilityGuard() {
     }
   };
 
+  const handleAbort = () => {
+    aborted = true;
+  };
+
   document.addEventListener("visibilitychange", handleVisibilityChange);
+  if (abortSignal) {
+    abortSignal.addEventListener("abort", handleAbort);
+    if (abortSignal.aborted) handleAbort();
+  }
 
   return {
     assertVisible() {
+      if (aborted) {
+        throw new Error("The benchmark was stopped by the user.");
+      }
       if (hidden || document.visibilityState !== "visible") {
         throw new Error(
           "The benchmark was aborted because the tab became hidden. Keep this tab visible for the full run.",
@@ -114,10 +126,13 @@ function createVisibilityGuard() {
       }
     },
     passed() {
-      return !hidden && document.visibilityState === "visible";
+      return !hidden && !aborted && document.visibilityState === "visible";
     },
     cleanup() {
       document.removeEventListener("visibilitychange", handleVisibilityChange);
+      if (abortSignal) {
+        abortSignal.removeEventListener("abort", handleAbort);
+      }
     },
   };
 }
@@ -1415,10 +1430,12 @@ export async function runGpuBenchmark({
   preset = "full",
   onProgress,
   mock = false,
+  abortSignal,
 }: {
   preset?: BenchmarkPreset;
   onProgress?: (update: BenchmarkProgressUpdate) => void;
   mock?: boolean;
+  abortSignal?: AbortSignal;
 }): Promise<GpuBenchmarkResult> {
   const resolvedPreset = resolveBenchmarkPreset(preset);
   const config = getGpuPreset(resolvedPreset);
@@ -1435,7 +1452,7 @@ export async function runGpuBenchmark({
     return createMockGpuResult(config);
   }
 
-  const visibilityGuard = createVisibilityGuard();
+  const visibilityGuard = createVisibilityGuard(abortSignal);
   const harness = await createGpuHarness(config.renderWidth, config.renderHeight);
   const startedAt = Date.now();
   const totalSteps = 1 + GRAPHICS_ORDER.length + COMPUTE_ORDER.length + 1;

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
@@ -19,6 +19,7 @@ import {
   Settings2,
   ShieldAlert,
   Sparkles,
+  Square,
   Zap,
 } from "lucide-react";
 import { runCpuBenchmark } from "@/benchmarks/cpu/runner";
@@ -315,6 +316,14 @@ export function BenchmarkExperience({
   const [activityHistory, setActivityHistory] = useState<number[]>(() =>
     createHistorySeed(),
   );
+  const abortControllerRef = useRef<AbortController | null>(null);
+
+  function stopBenchmark() {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+  }
 
   function getSupport(profileCapabilities: CapabilityFlags) {
     if (isMockRun) {
@@ -421,6 +430,9 @@ export function BenchmarkExperience({
     }
 
     try {
+      const abortController = new AbortController();
+      abortControllerRef.current = abortController;
+
       if (benchmarkKind === "cpu") {
         setSelectedCpuRunMode(cpuRunMode);
       }
@@ -438,6 +450,7 @@ export function BenchmarkExperience({
             preset,
             mock: isMockRun,
             runMode: cpuRunMode,
+            abortSignal: abortController.signal,
             onProgress: (update) => {
               handleProgressUpdate(update);
             },
@@ -445,6 +458,7 @@ export function BenchmarkExperience({
           : await runGpuBenchmark({
             preset,
             mock: isMockRun,
+            abortSignal: abortController.signal,
             onProgress: (update) => {
               handleProgressUpdate(update);
             },
@@ -490,17 +504,26 @@ export function BenchmarkExperience({
       }
     } catch (runError) {
       setResult(null);
-      setProgress(
-        progress,
-        "Submission failed",
-        "The benchmark run finished, but the result could not be saved.",
-      );
-      setError(
-        runError instanceof Error
-          ? runError.message
-          : "Benchmark execution failed.",
-      );
+      const isAbortError = runError instanceof Error && runError.message === "The benchmark was stopped by the user.";
+
+      if (isAbortError) {
+        setRunState("ready");
+        setProgress(0, "Ready", "Ready to start again.");
+        setError("Benchmark was stopped manually.");
+      } else {
+        setProgress(
+          progress,
+          "Submission failed",
+          "The benchmark run finished, but the result could not be saved.",
+        );
+        setError(
+          runError instanceof Error
+            ? runError.message
+            : "Benchmark execution failed.",
+        );
+      }
     } finally {
+      abortControllerRef.current = null;
       setIsSubmitting(false);
     }
   }
@@ -571,22 +594,32 @@ export function BenchmarkExperience({
               </p>
 
               <div className="flex flex-col items-center gap-4">
-                <Button
-                  className="h-20 w-full max-w-xl rounded-[2rem] bg-primary px-8 text-2xl font-bold text-primary-foreground shadow-[0_20px_40px_rgba(37,99,235,0.3)] transition-all hover:-translate-y-1 hover:shadow-[0_25px_50px_rgba(37,99,235,0.4)]"
-                  disabled={runState === "running" || isSubmitting}
-                  onClick={() => void startBenchmark("full")}
-                >
-                  {runState === "running" || isSubmitting ? (
-                    <LoaderCircle className="size-6 animate-spin" />
-                  ) : (
-                    <ArrowRight className="size-6" />
-                  )}
-                  {runState === "running"
-                    ? "Running benchmark"
-                    : benchmarkKind === "cpu"
+                {runState === "running" ? (
+                  <Button
+                    variant="destructive"
+                    className="h-20 w-full max-w-xl rounded-[2rem] px-8 text-2xl font-bold shadow-[0_20px_40px_rgba(239,68,68,0.2)] transition-all hover:-translate-y-1 hover:shadow-[0_25px_50px_rgba(239,68,68,0.3)]"
+                    onClick={stopBenchmark}
+                    disabled={isSubmitting}
+                  >
+                    <Square className="size-6 mr-2" fill="currentColor" />
+                    Stop Benchmark
+                  </Button>
+                ) : (
+                  <Button
+                    className="h-20 w-full max-w-xl rounded-[2rem] bg-primary px-8 text-2xl font-bold text-primary-foreground shadow-[0_20px_40px_rgba(37,99,235,0.3)] transition-all hover:-translate-y-1 hover:shadow-[0_25px_50px_rgba(37,99,235,0.4)]"
+                    disabled={isSubmitting}
+                    onClick={() => void startBenchmark("full")}
+                  >
+                    {isSubmitting ? (
+                      <LoaderCircle className="size-6 animate-spin mr-2" />
+                    ) : (
+                      <ArrowRight className="size-6 mr-2" />
+                    )}
+                    {benchmarkKind === "cpu"
                       ? "Start Full CPU Benchmark"
                       : "Start GPU Benchmark"}
-                </Button>
+                  </Button>
+                )}
 
                 {benchmarkKind === "cpu" ? (
                   <div className="flex w-full max-w-xl flex-wrap justify-center gap-4">
