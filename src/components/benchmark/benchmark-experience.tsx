@@ -243,37 +243,37 @@ function getPlaceholderActivity(
 ): BenchmarkActivityEntry[] {
   return benchmarkKind === "cpu"
     ? [
-        {
-          id: "workers",
-          label: "Worker lanes",
-          detail: "Per-worker throughput appears here once the run starts.",
-          value: 0,
-          normalized: 0.12,
-        },
-        {
-          id: "kernels",
-          label: "Kernel stream",
-          detail: "The active CPU kernel and its iteration rate will stream live here.",
-          value: 0,
-          normalized: 0.12,
-        },
-      ]
+      {
+        id: "workers",
+        label: "Worker lanes",
+        detail: "Per-worker throughput appears here once the run starts.",
+        value: 0,
+        normalized: 0.12,
+      },
+      {
+        id: "kernels",
+        label: "Kernel stream",
+        detail: "The active CPU kernel and its iteration rate will stream live here.",
+        value: 0,
+        normalized: 0.12,
+      },
+    ]
     : [
-        {
-          id: "render",
-          label: "Render queue",
-          detail: "Graphics or compute batches appear here once the GPU run begins.",
-          value: 0,
-          normalized: 0.12,
-        },
-        {
-          id: "dispatch",
-          label: "Dispatch mix",
-          detail: "The active scene or compute workload will stream live here.",
-          value: 0,
-          normalized: 0.12,
-        },
-      ];
+      {
+        id: "render",
+        label: "Render queue",
+        detail: "Graphics or compute batches appear here once the GPU run begins.",
+        value: 0,
+        normalized: 0.12,
+      },
+      {
+        id: "dispatch",
+        label: "Dispatch mix",
+        detail: "The active scene or compute workload will stream live here.",
+        value: 0,
+        normalized: 0.12,
+      },
+    ];
 }
 
 export function BenchmarkExperience({
@@ -366,9 +366,9 @@ export function BenchmarkExperience({
     const activityLevel =
       update.telemetry.activity.length > 0
         ? update.telemetry.activity.reduce(
-            (sum, entry) => sum + entry.normalized,
-            0,
-          ) / update.telemetry.activity.length
+          (sum, entry) => sum + entry.normalized,
+          0,
+        ) / update.telemetry.activity.length
         : 0;
 
     setActivityHistory((previous) => [
@@ -435,20 +435,20 @@ export function BenchmarkExperience({
       const benchmarkResult =
         benchmarkKind === "cpu"
           ? await runCpuBenchmark({
-              preset,
-              mock: isMockRun,
-              runMode: cpuRunMode,
-              onProgress: (update) => {
-                handleProgressUpdate(update);
-              },
-            })
+            preset,
+            mock: isMockRun,
+            runMode: cpuRunMode,
+            onProgress: (update) => {
+              handleProgressUpdate(update);
+            },
+          })
           : await runGpuBenchmark({
-              preset,
-              mock: isMockRun,
-              onProgress: (update) => {
-                handleProgressUpdate(update);
-              },
-            });
+            preset,
+            mock: isMockRun,
+            onProgress: (update) => {
+              handleProgressUpdate(update);
+            },
+          });
 
       setResult(benchmarkResult);
 
@@ -458,17 +458,17 @@ export function BenchmarkExperience({
       const payload =
         benchmarkResult.benchmarkKind === "cpu"
           ? {
-              benchmarkKind: "cpu" as const,
-              deviceProfile,
-              result: benchmarkResult,
-              benchmarkVersion: benchmarkResult.benchmarkVersion,
-            }
+            benchmarkKind: "cpu" as const,
+            deviceProfile,
+            result: benchmarkResult,
+            benchmarkVersion: benchmarkResult.benchmarkVersion,
+          }
           : {
-              benchmarkKind: "gpu" as const,
-              deviceProfile,
-              result: benchmarkResult,
-              benchmarkVersion: benchmarkResult.benchmarkVersion,
-            };
+            benchmarkKind: "gpu" as const,
+            deviceProfile,
+            result: benchmarkResult,
+            benchmarkVersion: benchmarkResult.benchmarkVersion,
+          };
 
       try {
         const persisted = await submitBenchmarkResult(payload, accessToken);
@@ -508,40 +508,40 @@ export function BenchmarkExperience({
   const parameterCards =
     benchmarkKind === "cpu"
       ? [
-          {
-            label: "Mode",
-            value:
-              selectedCpuRunMode === "singleCore"
-                ? "Single-core only"
-                : selectedCpuRunMode === "multiCore"
-                  ? "Multi-core only"
-                  : "Full CPU benchmark",
-          },
-          {
-            label: "Threads",
-            value: deviceProfile
-              ? `Auto (${deviceProfile.cpuLogicalCores} logical)`
-              : "Auto (max)",
-          },
-          {
-            label: "Duration",
-            value: cpuModeDuration,
-          },
-          {
-            label: "Stability",
-            value:
-              selectedCpuRunMode === "full"
-                ? "Sustained mixed load"
-                : "Not included in this run",
-          },
-          { label: "Engine", value: "Workers + WASM" },
-        ]
+        {
+          label: "Mode",
+          value:
+            selectedCpuRunMode === "singleCore"
+              ? "Single-core only"
+              : selectedCpuRunMode === "multiCore"
+                ? "Multi-core only"
+                : "Full CPU benchmark",
+        },
+        {
+          label: "Threads",
+          value: deviceProfile
+            ? `Auto (${deviceProfile.cpuLogicalCores} logical)`
+            : "Auto (max)",
+        },
+        {
+          label: "Duration",
+          value: cpuModeDuration,
+        },
+        {
+          label: "Stability",
+          value:
+            selectedCpuRunMode === "full"
+              ? "Sustained mixed load"
+              : "Not included in this run",
+        },
+        { label: "Engine", value: "Workers + WASM" },
+      ]
       : [
-          { label: "Adapter", value: "High performance" },
-          { label: "Duration", value: copy.duration },
-          { label: "Renderer", value: "WebGPU" },
-          { label: "Stability", value: "Mixed render + compute" },
-        ];
+        { label: "Adapter", value: "High performance" },
+        { label: "Duration", value: copy.duration },
+        { label: "Renderer", value: "WebGPU" },
+        { label: "Stability", value: "Mixed render + compute" },
+      ];
 
   return (
     <div className="shell-section pb-24 pt-10">
@@ -735,11 +735,11 @@ export function BenchmarkExperience({
                 >
                   {liveScores.map((entry) => (
                     <div key={entry.id} className="soft-tile p-5">
-                      <div className="flex items-center justify-between gap-3">
-                        <p className="soft-label">{entry.label}</p>
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <p className="soft-label max-w-full">{entry.label}</p>
                         <span
                           className={cn(
-                            "rounded-full px-2.5 py-1 text-[0.68rem] font-semibold uppercase tracking-[0.18em]",
+                            "rounded-full px-2.5 py-1 text-[0.65rem] font-semibold uppercase tracking-[0.15em] shrink-0",
                             entry.status === "live"
                               ? "bg-primary/10 text-primary"
                               : entry.status === "complete"
