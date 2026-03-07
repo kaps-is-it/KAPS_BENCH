@@ -33,22 +33,22 @@ export const CPU_AGGREGATE_WEIGHTS = {
 export const CPU_SCORE_CURVES = {
   singleCore: {
     anchorScore: 280,
-    anchorRatio: 18,
+    anchorRatio: 250,
     exponent: 0.74,
   },
   multiCore: {
     anchorScore: 1000,
-    anchorRatio: 12,
+    anchorRatio: 250,
     exponent: 0.82,
   },
   sustained: {
     anchorScore: 700,
-    anchorRatio: 12,
+    anchorRatio: 250,
     exponent: 0.82,
   },
   headline: {
     anchorScore: 1000,
-    anchorRatio: 12,
+    anchorRatio: 250,
     exponent: 0.82,
   },
 } satisfies Record<"singleCore" | "multiCore" | "sustained" | "headline", ScoreCurveConfig>;

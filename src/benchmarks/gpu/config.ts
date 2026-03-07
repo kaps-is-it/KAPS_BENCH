@@ -42,7 +42,7 @@ export const GPU_AGGREGATE_WEIGHTS = {
 
 export const GPU_SCORE_CURVE: ScoreCurveConfig = {
   anchorScore: 3000,
-  anchorRatio: 10,
+  anchorRatio: 200,
   exponent: 0.82,
 };
 

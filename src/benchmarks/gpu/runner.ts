@@ -1047,27 +1047,27 @@ function buildGpuActivityEntries({
       { passes: number; loops: number; instances: number }
     > = {
       rasterScene: {
-        passes: 3,
+        passes: 30,
         loops: 6,
         instances: config.renderBatch.rasterInstances,
       },
       shadingScene: {
-        passes: 4,
+        passes: 40,
         loops: config.renderBatch.shadingLoops,
         instances: 1,
       },
       instancingScene: {
-        passes: 3,
+        passes: 30,
         loops: 10,
         instances: config.renderBatch.instancingInstances,
       },
       particleScene: {
-        passes: 2,
+        passes: 20,
         loops: 8,
         instances: config.renderBatch.particleInstances,
       },
       postProcessScene: {
-        passes: 4,
+        passes: 40,
         loops: config.renderBatch.postProcessLoops,
         instances: 1,
       },
@@ -1080,7 +1080,7 @@ function buildGpuActivityEntries({
         label: "Render passes",
         detail: `${preset.passes} passes per submission`,
         value: preset.passes,
-        normalized: preset.passes / 4,
+        normalized: preset.passes / 40,
       },
       {
         id: "shader-pressure",
@@ -1090,7 +1090,7 @@ function buildGpuActivityEntries({
         normalized: Math.max(
           0.08,
           preset.loops /
-            Math.max(config.renderBatch.shadingLoops, config.renderBatch.postProcessLoops),
+          Math.max(config.renderBatch.shadingLoops, config.renderBatch.postProcessLoops),
         ),
       },
       {
@@ -1109,17 +1109,17 @@ function buildGpuActivityEntries({
       { dispatches: number; dataset: number; label: string }
     > = {
       matrixCompute: {
-        dispatches: 4,
+        dispatches: 40,
         dataset: config.computeBatch.matrixSize,
         label: `${config.computeBatch.matrixSize}x${config.computeBatch.matrixSize} matrix tiles`,
       },
       convolutionCompute: {
-        dispatches: 3,
+        dispatches: 30,
         dataset: config.computeBatch.convolutionSize,
         label: `${config.computeBatch.convolutionSize}px convolution grid`,
       },
       simulationCompute: {
-        dispatches: 5,
+        dispatches: 50,
         dataset: config.computeBatch.simulationParticles,
         label: `${config.computeBatch.simulationParticles.toLocaleString()} particle bodies`,
       },
@@ -1132,7 +1132,7 @@ function buildGpuActivityEntries({
         label: "Dispatch pressure",
         detail: `${preset.dispatches} dispatch repeats`,
         value: preset.dispatches,
-        normalized: preset.dispatches / 5,
+        normalized: preset.dispatches / 50,
       },
       {
         id: "dataset-size",
@@ -1464,26 +1464,26 @@ export async function runGpuBenchmark({
       !liveSnapshot || activeStage === "warmup" || !activeKernel
         ? null
         : createGpuKernelMetric(
-            activeKernel,
-            activeKernel === "mixedLoad"
-              ? "Mixed sustained load"
-              : activeKernel in GPU_GRAPHICS_LABELS
-                ? GPU_GRAPHICS_LABELS[activeKernel as GpuGraphicsKernelId]
-                : GPU_COMPUTE_LABELS[activeKernel as GpuComputeKernelId],
-            {
-              ...liveSnapshot,
-              timestampQueryUsed: false,
-            },
-            activeMessage,
-          );
+          activeKernel,
+          activeKernel === "mixedLoad"
+            ? "Mixed sustained load"
+            : activeKernel in GPU_GRAPHICS_LABELS
+              ? GPU_GRAPHICS_LABELS[activeKernel as GpuGraphicsKernelId]
+              : GPU_COMPUTE_LABELS[activeKernel as GpuComputeKernelId],
+          {
+            ...liveSnapshot,
+            timestampQueryUsed: false,
+          },
+          activeMessage,
+        );
     const liveGraphicsScore = estimateGpuAggregateScore(
       "graphics",
       "Graphics",
       activeStage === "graphics" && activeMetric
         ? {
-            ...graphicsMetrics,
-            [activeKernel as GpuGraphicsKernelId]: activeMetric,
-          }
+          ...graphicsMetrics,
+          [activeKernel as GpuGraphicsKernelId]: activeMetric,
+        }
         : graphicsMetrics,
       config.referenceThroughputs.graphics,
     );
@@ -1492,49 +1492,49 @@ export async function runGpuBenchmark({
       "Compute",
       activeStage === "compute" && activeMetric
         ? {
-            ...computeMetrics,
-            [activeKernel as GpuComputeKernelId]: activeMetric,
-          }
+          ...computeMetrics,
+          [activeKernel as GpuComputeKernelId]: activeMetric,
+        }
         : computeMetrics,
       config.referenceThroughputs.compute,
     );
     const liveSustainedScore =
       activeStage === "sustained" && activeMetric
         ? calculateGpuAggregateSubScore({
+          id: "sustained",
+          label: "Sustained",
+          kernels: [
+            {
+              id: "mixedLoad",
+              throughput: activeMetric.throughput,
+              referenceThroughput: config.referenceThroughputs.sustained,
+              durationMs: activeMetric.durationMs,
+              notes: activeMetric.notes,
+            },
+          ],
+        }).score
+        : sustainedMetric
+          ? calculateGpuAggregateSubScore({
             id: "sustained",
             label: "Sustained",
             kernels: [
               {
                 id: "mixedLoad",
-                throughput: activeMetric.throughput,
+                throughput: sustainedMetric.throughput,
                 referenceThroughput: config.referenceThroughputs.sustained,
-                durationMs: activeMetric.durationMs,
-                notes: activeMetric.notes,
+                durationMs: sustainedMetric.durationMs,
+                notes: sustainedMetric.notes,
               },
             ],
           }).score
-        : sustainedMetric
-          ? calculateGpuAggregateSubScore({
-              id: "sustained",
-              label: "Sustained",
-              kernels: [
-                {
-                  id: "mixedLoad",
-                  throughput: sustainedMetric.throughput,
-                  referenceThroughput: config.referenceThroughputs.sustained,
-                  durationMs: sustainedMetric.durationMs,
-                  notes: sustainedMetric.notes,
-                },
-              ],
-            }).score
           : null;
     const throughputRatio =
       activeStage === "graphics" && activeMetric && activeKernel
         ? activeMetric.throughput /
-          config.referenceThroughputs.graphics[activeKernel as GpuGraphicsKernelId]
+        config.referenceThroughputs.graphics[activeKernel as GpuGraphicsKernelId]
         : activeStage === "compute" && activeMetric && activeKernel
           ? activeMetric.throughput /
-            config.referenceThroughputs.compute[activeKernel as GpuComputeKernelId]
+          config.referenceThroughputs.compute[activeKernel as GpuComputeKernelId]
           : activeStage === "sustained" && activeMetric
             ? activeMetric.throughput / config.referenceThroughputs.sustained
             : 0;
@@ -1640,7 +1640,7 @@ export async function runGpuBenchmark({
           amplitude: 0.8,
           scale: 0.012,
           loops: Math.max(8, config.renderBatch.shadingLoops / 2),
-          passes: 3,
+          passes: 30,
           clearColor: { r: 0.06, g: 0.08, b: 0.12, a: 1 },
         }),
     });
@@ -1676,7 +1676,7 @@ export async function runGpuBenchmark({
                 amplitude: 0.55,
                 scale: 0.55,
                 loops: 6,
-                passes: 3,
+                passes: 30,
                 instanceCount: config.renderBatch.rasterInstances,
                 clearColor: { r: 0.03, g: 0.04, b: 0.06, a: 1 },
               });
@@ -1686,7 +1686,7 @@ export async function runGpuBenchmark({
                 amplitude: 0.7,
                 scale: 0.02,
                 loops: config.renderBatch.shadingLoops,
-                passes: 4,
+                passes: 40,
                 clearColor: { r: 0.02, g: 0.02, b: 0.03, a: 1 },
               });
             case "instancingScene":
@@ -1695,7 +1695,7 @@ export async function runGpuBenchmark({
                 amplitude: 0.95,
                 scale: 0.75,
                 loops: 10,
-                passes: 3,
+                passes: 30,
                 instanceCount: config.renderBatch.instancingInstances,
                 clearColor: { r: 0.02, g: 0.03, b: 0.04, a: 1 },
               });
@@ -1705,14 +1705,14 @@ export async function runGpuBenchmark({
                   harness,
                   config.computeBatch.simulationParticles,
                   iteration,
-                  3,
+                  30,
                 )(encoder);
                 const renderStats = buildInstancedBatch(harness, {
                   time: iteration * 0.021,
                   amplitude: 1.2,
                   scale: 0.35,
                   loops: 8,
-                  passes: 2,
+                  passes: 20,
                   instanceCount: config.renderBatch.particleInstances,
                   clearColor: { r: 0.015, g: 0.02, b: 0.03, a: 1 },
                 })(encoder);
@@ -1728,7 +1728,7 @@ export async function runGpuBenchmark({
                 amplitude: 0.8,
                 scale: 0.012,
                 loops: config.renderBatch.postProcessLoops,
-                passes: 4,
+                passes: 40,
                 clearColor: { r: 0.01, g: 0.015, b: 0.02, a: 1 },
               });
             default:
@@ -1774,21 +1774,21 @@ export async function runGpuBenchmark({
                 harness,
                 config.computeBatch.matrixSize,
                 iteration,
-                4,
+                40,
               );
             case "convolutionCompute":
               return buildConvolutionBatch(
                 harness,
                 config.computeBatch.convolutionSize,
                 iteration,
-                3,
+                30,
               );
             case "simulationCompute":
               return buildSimulationBatch(
                 harness,
                 config.computeBatch.simulationParticles,
                 iteration,
-                5,
+                50,
               );
             default:
               throw new Error(`Unsupported compute kernel: ${kernel}`);
@@ -1830,14 +1830,14 @@ export async function runGpuBenchmark({
           harness,
           config.computeBatch.simulationParticles,
           iteration,
-          4,
+          40,
         )(encoder);
         const rasterStats = buildInstancedBatch(harness, {
           time: iteration * 0.012,
           amplitude: 0.9,
           scale: 0.6,
           loops: 8,
-          passes: 2,
+          passes: 20,
           instanceCount: config.renderBatch.instancingInstances,
           clearColor: { r: 0.02, g: 0.025, b: 0.03, a: 1 },
         })(encoder);
@@ -1846,7 +1846,7 @@ export async function runGpuBenchmark({
           amplitude: 0.7,
           scale: 0.02,
           loops: Math.max(10, config.renderBatch.postProcessLoops / 2),
-          passes: 3,
+          passes: 30,
           clearColor: { r: 0.02, g: 0.025, b: 0.03, a: 1 },
         })(encoder);
 

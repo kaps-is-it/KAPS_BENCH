@@ -50,10 +50,8 @@ export function scoreFromRatio(ratio: number, curve: ScoreCurveConfig) {
     curve.anchorScore * Math.pow(normalizedRatio, curve.exponent),
   );
 
-  return Math.min(
-    curve.maxScore ?? MAX_BENCHMARK_SCORE,
-    Math.max(curve.minScore ?? MIN_BENCHMARK_SCORE, rawScore),
-  );
+  const score = Math.max(curve.minScore ?? MIN_BENCHMARK_SCORE, rawScore);
+  return curve.maxScore !== undefined ? Math.min(curve.maxScore, score) : score;
 }
 
 export function getRatingForScore(
