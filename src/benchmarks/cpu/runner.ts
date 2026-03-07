@@ -281,11 +281,18 @@ function estimateCpuAggregateScore(
   label: string,
   metrics: Partial<Record<CpuKernelId, CpuKernelMetric>>,
   referenceThroughputs: Record<CpuKernelId, number>,
+  defaultWorkerCount: number,
 ) {
-  const kernels = CPU_KERNEL_ORDER.filter((kernel) => Boolean(metrics[kernel])).map(
-    (kernel) => {
-      const metric = metrics[kernel]!;
+  const measuredKernelCount = CPU_KERNEL_ORDER.filter((kernel) => Boolean(metrics[kernel])).length;
 
+  if (measuredKernelCount === 0) {
+    return null;
+  }
+
+  const kernels = CPU_KERNEL_ORDER.map((kernel) => {
+    const metric = metrics[kernel];
+
+    if (metric) {
       return {
         id: kernel,
         throughput: metric.throughput,
@@ -294,12 +301,17 @@ function estimateCpuAggregateScore(
         workerCount: metric.workerCount,
         notes: metric.notes,
       };
-    },
-  );
+    }
 
-  if (kernels.length === 0) {
-    return null;
-  }
+    return {
+      id: kernel,
+      throughput: referenceThroughputs[kernel],
+      referenceThroughput: referenceThroughputs[kernel],
+      durationMs: 0,
+      workerCount: defaultWorkerCount,
+      notes: "Pending kernel projected at the reference baseline until measured.",
+    };
+  });
 
   return calculateCpuAggregateSubScore({
     id,
@@ -554,6 +566,7 @@ export async function runCpuBenchmark({
           }
         : singleCoreMetrics ?? {},
       config.referenceThroughputs.singleCore,
+      1,
     );
     const liveMultiCoreScore = estimateCpuAggregateScore(
       "multiCore",
@@ -565,6 +578,7 @@ export async function runCpuBenchmark({
           }
         : multiCoreMetrics ?? {},
       config.referenceThroughputs.multiCore,
+      workerCount,
     );
     const liveSustainedScore = estimateCpuSustainedScore(
       activeStage === "sustained" && activeMetric ? activeMetric : sustainedMetric,

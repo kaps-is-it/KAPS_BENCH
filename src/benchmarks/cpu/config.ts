@@ -30,19 +30,46 @@ export const CPU_AGGREGATE_WEIGHTS = {
   sustained: 0.15,
 } as const;
 
-export const CPU_SCORE_CURVE: ScoreCurveConfig = {
-  anchorScore: 1000,
-  anchorRatio: 12,
-  exponent: 0.8,
-};
+export const CPU_SCORE_CURVES = {
+  singleCore: {
+    anchorScore: 280,
+    anchorRatio: 18,
+    exponent: 0.74,
+  },
+  multiCore: {
+    anchorScore: 1000,
+    anchorRatio: 12,
+    exponent: 0.82,
+  },
+  sustained: {
+    anchorScore: 700,
+    anchorRatio: 12,
+    exponent: 0.82,
+  },
+  headline: {
+    anchorScore: 1000,
+    anchorRatio: 12,
+    exponent: 0.82,
+  },
+} satisfies Record<"singleCore" | "multiCore" | "sustained" | "headline", ScoreCurveConfig>;
 
-export const CPU_RATING_BANDS: readonly RatingBand[] = [
+export const CPU_HEADLINE_RATING_BANDS: readonly RatingBand[] = [
   { min: 1000, label: "Flagship" },
   { min: 820, label: "High-End" },
   { min: 620, label: "Performance" },
   { min: 380, label: "Capable" },
   { min: 0, label: "Entry" },
 ] as const;
+
+export const CPU_SINGLE_CORE_RATING_BANDS: readonly RatingBand[] = [
+  { min: 280, label: "Flagship" },
+  { min: 230, label: "High-End" },
+  { min: 185, label: "Performance" },
+  { min: 150, label: "Capable" },
+  { min: 0, label: "Entry" },
+] as const;
+
+export const CPU_MULTI_CORE_RATING_BANDS = CPU_HEADLINE_RATING_BANDS;
 
 type CpuPresetConfig = {
   name: "full" | "smoke";

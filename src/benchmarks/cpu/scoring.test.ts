@@ -4,7 +4,7 @@ import {
 } from "@/benchmarks/cpu/scoring";
 
 describe("cpu scoring", () => {
-  it("places a high-end cpu band around the 1000-point anchor", () => {
+  it("keeps single-core materially below the full cpu anchor while preserving the full-score target", () => {
     const singleCore = calculateCpuAggregateSubScore({
       id: "singleCore",
       label: "Single-core",
@@ -73,14 +73,14 @@ describe("cpu scoring", () => {
       },
     });
 
-    expect(singleCore.score).toBeGreaterThanOrEqual(950);
-    expect(singleCore.score).toBeLessThanOrEqual(1050);
+    expect(singleCore.score).toBeGreaterThanOrEqual(180);
+    expect(singleCore.score).toBeLessThanOrEqual(260);
     expect(result.cpuScore).toBeGreaterThanOrEqual(950);
     expect(result.cpuScore).toBeLessThanOrEqual(1050);
     expect(result.rating.length).toBeGreaterThan(0);
   });
 
-  it("uses the selected partial cpu mode as the headline score", () => {
+  it("uses the selected partial cpu mode as the headline score with the partial curve", () => {
     const singleCore = calculateCpuAggregateSubScore({
       id: "singleCore",
       label: "Single-core",
@@ -106,5 +106,7 @@ describe("cpu scoring", () => {
     });
 
     expect(result.cpuScore).toBe(singleCore.score);
+    expect(result.cpuScore).toBeGreaterThanOrEqual(150);
+    expect(result.cpuScore).toBeLessThan(300);
   });
 });

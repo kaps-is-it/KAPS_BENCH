@@ -8,8 +8,10 @@ import type {
 import {
   CPU_AGGREGATE_WEIGHTS,
   CPU_KERNEL_WEIGHTS,
-  CPU_RATING_BANDS,
-  CPU_SCORE_CURVE,
+  CPU_HEADLINE_RATING_BANDS,
+  CPU_MULTI_CORE_RATING_BANDS,
+  CPU_SCORE_CURVES,
+  CPU_SINGLE_CORE_RATING_BANDS,
 } from "@/benchmarks/cpu/config";
 import {
   getRatingForScore,
@@ -31,6 +33,18 @@ type CpuAggregateInput = {
   }>;
 };
 
+function getCpuAggregateCurve(id: CpuAggregateScoreId) {
+  if (id === "singleCore") {
+    return CPU_SCORE_CURVES.singleCore;
+  }
+
+  if (id === "multiCore") {
+    return CPU_SCORE_CURVES.multiCore;
+  }
+
+  return CPU_SCORE_CURVES.sustained;
+}
+
 export function calculateCpuAggregateSubScore(
   input: CpuAggregateInput,
 ): BenchmarkSubScore {
@@ -41,7 +55,7 @@ export function calculateCpuAggregateSubScore(
         kernel.id === "mixedBurn" ? 1 : CPU_KERNEL_WEIGHTS[kernel.id as CpuKernelId],
     })),
   );
-  const score = scoreFromRatio(ratio, CPU_SCORE_CURVE);
+  const score = scoreFromRatio(ratio, getCpuAggregateCurve(input.id));
   const durationMs = input.kernels.reduce((sum, kernel) => sum + kernel.durationMs, 0);
   const workerCount = Math.max(...input.kernels.map((kernel) => kernel.workerCount));
 
@@ -74,7 +88,7 @@ export function calculateCpuScore({
 
     return {
       cpuScore: singleCore.score,
-      rating: getRatingForScore(singleCore.score, CPU_RATING_BANDS),
+      rating: getRatingForScore(singleCore.score, CPU_SINGLE_CORE_RATING_BANDS),
     };
   }
 
@@ -87,7 +101,7 @@ export function calculateCpuScore({
 
     return {
       cpuScore: multiCore.score,
-      rating: getRatingForScore(multiCore.score, CPU_RATING_BANDS),
+      rating: getRatingForScore(multiCore.score, CPU_MULTI_CORE_RATING_BANDS),
     };
   }
 
@@ -110,10 +124,10 @@ export function calculateCpuScore({
     },
   ]);
 
-  const cpuScore = scoreFromRatio(ratio, CPU_SCORE_CURVE);
+  const cpuScore = scoreFromRatio(ratio, CPU_SCORE_CURVES.headline);
 
   return {
     cpuScore,
-    rating: getRatingForScore(cpuScore, CPU_RATING_BANDS),
+    rating: getRatingForScore(cpuScore, CPU_HEADLINE_RATING_BANDS),
   };
 }
