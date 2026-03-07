@@ -545,38 +545,7 @@ export function BenchmarkExperience({
 
   return (
     <div className="shell-section pb-24 pt-10">
-      <div className="grid gap-8 xl:grid-cols-[260px_minmax(0,1fr)]">
-        <aside className="hidden xl:block">
-          <div className="sticky top-28 space-y-3">
-            {sidebarItems.map((item) => {
-              const Icon = item.icon;
-
-              if (!item.href) {
-                return (
-                  <div
-                    key={item.label}
-                    className="flex items-center gap-3 rounded-full bg-primary/10 px-5 py-4 font-medium text-primary"
-                  >
-                    <Icon className="size-5" />
-                    {item.label}
-                  </div>
-                );
-              }
-
-              return (
-                <Link
-                  key={item.label}
-                  href={item.href}
-                  className="flex items-center gap-3 rounded-full px-5 py-4 font-medium text-slate-600 transition-colors hover:bg-white hover:text-slate-950"
-                >
-                  <Icon className="size-5" />
-                  {item.label}
-                </Link>
-              );
-            })}
-          </div>
-        </aside>
-
+      <div>
         <div className="space-y-8">
           <section className="dashboard-card p-7 sm:p-10">
             <div className="flex flex-col gap-7">
@@ -601,16 +570,16 @@ export function BenchmarkExperience({
                 {copy.intro}
               </p>
 
-              <div className="flex flex-wrap gap-4">
+              <div className="flex flex-col items-center gap-4">
                 <Button
-                  className="h-16 rounded-full bg-primary px-8 text-xl font-semibold text-primary-foreground shadow-[0_18px_38px_rgba(37,99,235,0.25)]"
+                  className="h-20 w-full max-w-xl rounded-[2rem] bg-primary px-8 text-2xl font-bold text-primary-foreground shadow-[0_20px_40px_rgba(37,99,235,0.3)] transition-all hover:-translate-y-1 hover:shadow-[0_25px_50px_rgba(37,99,235,0.4)]"
                   disabled={runState === "running" || isSubmitting}
                   onClick={() => void startBenchmark("full")}
                 >
                   {runState === "running" || isSubmitting ? (
-                    <LoaderCircle className="size-5 animate-spin" />
+                    <LoaderCircle className="size-6 animate-spin" />
                   ) : (
-                    <ArrowRight className="size-5" />
+                    <ArrowRight className="size-6" />
                   )}
                   {runState === "running"
                     ? "Running benchmark"
@@ -618,38 +587,28 @@ export function BenchmarkExperience({
                       ? "Start Full CPU Benchmark"
                       : "Start GPU Benchmark"}
                 </Button>
-                <Button
-                  asChild
-                  variant="outline"
-                  className="h-16 rounded-full border-slate-200 bg-white px-8 text-xl font-semibold text-slate-800 hover:bg-slate-50"
-                >
-                  <Link href="#parameters">
-                    <ChevronRight className="size-5" />
-                    View parameters
-                  </Link>
-                </Button>
-              </div>
 
-              {benchmarkKind === "cpu" ? (
-                <div className="flex flex-wrap gap-4">
-                  <Button
-                    variant="outline"
-                    className="h-14 rounded-full border-slate-200 bg-white px-6 text-base font-semibold text-slate-800 hover:bg-slate-50"
-                    disabled={runState === "running" || isSubmitting}
-                    onClick={() => void startBenchmark("singleCore")}
-                  >
-                    Single-Core Benchmark
-                  </Button>
-                  <Button
-                    variant="outline"
-                    className="h-14 rounded-full border-slate-200 bg-white px-6 text-base font-semibold text-slate-800 hover:bg-slate-50"
-                    disabled={runState === "running" || isSubmitting}
-                    onClick={() => void startBenchmark("multiCore")}
-                  >
-                    Multi-Core Benchmark
-                  </Button>
-                </div>
-              ) : null}
+                {benchmarkKind === "cpu" ? (
+                  <div className="flex w-full max-w-xl flex-wrap justify-center gap-4">
+                    <Button
+                      variant="outline"
+                      className="h-14 flex-1 rounded-full border-slate-200 bg-white px-6 text-base font-semibold text-slate-800 shadow-sm transition-all hover:-translate-y-0.5 hover:bg-slate-50 hover:shadow-md"
+                      disabled={runState === "running" || isSubmitting}
+                      onClick={() => void startBenchmark("singleCore")}
+                    >
+                      Single-Core Benchmark
+                    </Button>
+                    <Button
+                      variant="outline"
+                      className="h-14 flex-1 rounded-full border-slate-200 bg-white px-6 text-base font-semibold text-slate-800 shadow-sm transition-all hover:-translate-y-0.5 hover:bg-slate-50 hover:shadow-md"
+                      disabled={runState === "running" || isSubmitting}
+                      onClick={() => void startBenchmark("multiCore")}
+                    >
+                      Multi-Core Benchmark
+                    </Button>
+                  </div>
+                ) : null}
+              </div>
 
               <div className="flex flex-wrap gap-3">
                 <div className="metric-chip border-primary/15 bg-primary/8 text-primary">
@@ -867,80 +826,112 @@ export function BenchmarkExperience({
               </div>
 
               {deviceProfile ? (
-                <>
-                  <div className="grid gap-4 sm:grid-cols-2">
-                    <div className="soft-tile p-4">
-                      <p className="soft-label">GPU renderer</p>
-                      <p className="mt-3 text-lg font-semibold text-slate-900">
-                        {deviceProfile.gpuRenderer}
-                      </p>
-                    </div>
-                    <div className="soft-tile p-4">
-                      <p className="soft-label">CPU cores</p>
-                      <p className="mt-3 text-lg font-semibold text-slate-900">
-                        {deviceProfile.cpuLogicalCores} logical cores
-                      </p>
-                    </div>
-                    <div className="soft-tile p-4">
-                      <p className="soft-label">Display</p>
-                      <p className="mt-3 text-lg font-semibold text-slate-900">
-                        {deviceProfile.display.physicalWidth} ×{" "}
-                        {deviceProfile.display.physicalHeight}
-                      </p>
-                    </div>
-                    <div className="soft-tile p-4">
-                      <p className="soft-label">Approx memory</p>
-                      <p className="mt-3 text-lg font-semibold text-slate-900">
-                        {memorySummary.value}
-                      </p>
-                      <p className="mt-2 text-sm leading-6 text-slate-500">
-                        {memorySummary.detail}
-                      </p>
-                    </div>
-                  </div>
+                (() => {
+                  let parsedGpu = { main: deviceProfile.gpuRenderer, sub: "" };
+                  if (deviceProfile.gpuRenderer.startsWith("ANGLE (")) {
+                    const withoutAngle = deviceProfile.gpuRenderer.replace(/^ANGLE \(/, "").replace(/\)$/, "");
+                    const parts = withoutAngle.split(',').map((s) => s.trim());
+                    if (parts.length >= 2) {
+                      let mainRenderer = parts[1] || "";
+                      mainRenderer = mainRenderer.replace("ANGLE Metal Renderer: ", "");
+                      mainRenderer = mainRenderer.replace("Direct3D11 vs_5_0 ps_5_0", "").trim();
+                      mainRenderer = mainRenderer.replace("Direct3D11", "").trim();
 
-                  <div className="mt-6 flex flex-wrap gap-3">
-                    {[
-                      {
-                        label: "WebAssembly",
-                        enabled: deviceProfile.capabilities.webAssembly,
-                      },
-                      {
-                        label: "Workers",
-                        enabled: deviceProfile.capabilities.worker,
-                      },
-                      {
-                        label: "SharedArrayBuffer",
-                        enabled: deviceProfile.capabilities.sharedArrayBuffer,
-                      },
-                      {
-                        label: "Cross-origin isolated",
-                        enabled: deviceProfile.capabilities.crossOriginIsolated,
-                      },
-                      {
-                        label: "WebGPU",
-                        enabled: deviceProfile.capabilities.webgpu,
-                      },
-                    ].map(({ label, enabled }) => (
-                      <Badge
-                        key={label}
-                        className={cn(
-                          "rounded-full border px-3 py-1.5",
-                          enabled
-                            ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-                            : "border-slate-200 bg-slate-100 text-slate-500",
-                        )}
-                      >
-                        {enabled ? (
-                          <CheckCircle2 className="size-3.5" />
-                        ) : (
-                          <ShieldAlert className="size-3.5" />
-                        )}
-                        {label}
-                      </Badge>
-                    ))}
-                  </div>
-                </>
+                      const leftover = parts.filter((_, i) => i !== 1).join(", ");
+                      parsedGpu = { main: mainRenderer, sub: `(${leftover})` };
+                    }
+                  }
+
+                  return (
+                    <>
+                      <div className="grid gap-5 lg:grid-cols-2">
+                        <div className="flex flex-col justify-start rounded-[1.5rem] border border-slate-200 bg-white shadow-sm p-6 sm:p-8 min-h-[14rem]">
+                          <p className="mb-5 text-xs font-bold uppercase tracking-[0.18em] text-slate-400">
+                            GPU renderer
+                          </p>
+                          <p className="text-2xl font-semibold leading-snug text-slate-900 lg:text-[1.7rem]">
+                            {parsedGpu.main}
+                          </p>
+                          {parsedGpu.sub ? (
+                            <p className="mt-3 text-sm leading-relaxed text-slate-500">
+                              {parsedGpu.sub}
+                            </p>
+                          ) : null}
+                        </div>
+                        <div className="flex flex-col justify-start rounded-[1.5rem] border border-slate-200 bg-white shadow-sm p-6 sm:p-8 min-h-[14rem]">
+                          <p className="mb-5 text-xs font-bold uppercase tracking-[0.18em] text-slate-400">
+                            CPU cores
+                          </p>
+                          <p className="text-2xl font-semibold leading-snug text-slate-900 lg:text-[1.7rem]">
+                            {deviceProfile.cpuLogicalCores} logical cores
+                          </p>
+                        </div>
+                        <div className="flex flex-col justify-start rounded-[1.5rem] border border-slate-200 bg-white shadow-sm p-6 sm:p-8 min-h-[14rem]">
+                          <p className="mb-5 text-xs font-bold uppercase tracking-[0.18em] text-slate-400">
+                            Display
+                          </p>
+                          <p className="text-2xl font-semibold leading-snug text-slate-900 lg:text-[1.7rem]">
+                            {deviceProfile.display.physicalWidth} ×{" "}
+                            {deviceProfile.display.physicalHeight}
+                          </p>
+                        </div>
+                        <div className="flex flex-col justify-start rounded-[1.5rem] border border-slate-200 bg-white shadow-sm p-6 sm:p-8 min-h-[14rem]">
+                          <p className="mb-5 text-xs font-bold uppercase tracking-[0.18em] text-slate-400">
+                            Approx memory
+                          </p>
+                          <p className="text-2xl font-semibold leading-snug text-slate-900 lg:text-[1.7rem]">
+                            {memorySummary.value}
+                          </p>
+                          <p className="mt-3 text-sm leading-relaxed text-slate-500">
+                            {memorySummary.detail}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="mt-8 flex flex-wrap gap-4">
+                        {[
+                          {
+                            label: "WebAssembly",
+                            enabled: deviceProfile.capabilities.webAssembly,
+                          },
+                          {
+                            label: "Workers",
+                            enabled: deviceProfile.capabilities.worker,
+                          },
+                          {
+                            label: "SharedArrayBuffer",
+                            enabled: deviceProfile.capabilities.sharedArrayBuffer,
+                          },
+                          {
+                            label: "Cross-origin isolated",
+                            enabled: deviceProfile.capabilities.crossOriginIsolated,
+                          },
+                          {
+                            label: "WebGPU",
+                            enabled: deviceProfile.capabilities.webgpu,
+                          },
+                        ].map(({ label, enabled }) => (
+                          <Badge
+                            key={label}
+                            className={cn(
+                              "rounded-full border px-4 py-2 text-sm font-medium",
+                              enabled
+                                ? "border-emerald-300 bg-emerald-50 text-emerald-800"
+                                : "border-slate-200 bg-slate-100 text-slate-500",
+                            )}
+                          >
+                            {enabled ? (
+                              <CheckCircle2 className="size-4 mr-1 text-emerald-600" />
+                            ) : (
+                              <ShieldAlert className="size-4 mr-1 text-slate-400" />
+                            )}
+                            {label}
+                          </Badge>
+                        ))}
+                      </div>
+                    </>
+                  );
+                })()
               ) : (
                 <p className="text-base leading-8 text-slate-600">
                   Device detection has not completed yet.
