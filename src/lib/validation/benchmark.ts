@@ -49,7 +49,7 @@ const deviceProfileSchema = z.object({
 const benchmarkSubScoreSchema = z.object({
   id: z.string().min(1).max(64),
   label: z.string().min(1).max(64),
-  score: z.number().int().min(150).max(50000),
+  score: z.number().int().min(10).max(50000),
   measuredValue: z.number().min(0).max(1000000),
   referenceValue: z.number().min(0.0001).max(1000000),
   unit: z.string().min(1).max(64),
@@ -103,12 +103,12 @@ const gpuKernelMetricSchema = z.object({
 const cpuResultSchema = z.object({
   benchmarkKind: z.literal("cpu"),
   cpuRunMode: z.enum(["full", "singleCore", "multiCore"]),
-  headlineScore: z.number().int().min(150).max(50000),
-  cpuScore: z.number().int().min(150).max(50000),
+  headlineScore: z.number().int().min(10).max(50000),
+  cpuScore: z.number().int().min(10).max(50000),
   rating: z.string().min(1).max(64),
-  singleCoreScore: z.number().int().min(150).max(50000).nullable(),
-  multiCoreScore: z.number().int().min(150).max(50000).nullable(),
-  sustainedScore: z.number().int().min(150).max(50000).nullable(),
+  singleCoreScore: z.number().int().min(10).max(50000).nullable(),
+  multiCoreScore: z.number().int().min(10).max(50000).nullable(),
+  sustainedScore: z.number().int().min(10).max(50000).nullable(),
   subScores: z.object({
     singleCore: benchmarkSubScoreSchema.nullable(),
     multiCore: benchmarkSubScoreSchema.nullable(),
@@ -160,12 +160,12 @@ const cpuResultSchema = z.object({
 
 const gpuResultSchema = z.object({
   benchmarkKind: z.literal("gpu"),
-  headlineScore: z.number().int().min(150).max(50000),
-  gpuScore: z.number().int().min(150).max(50000),
+  headlineScore: z.number().int().min(10).max(50000),
+  gpuScore: z.number().int().min(10).max(50000),
   rating: z.string().min(1).max(64),
-  graphicsScore: z.number().int().min(150).max(50000),
-  computeScore: z.number().int().min(150).max(50000),
-  sustainedScore: z.number().int().min(150).max(50000),
+  graphicsScore: z.number().int().min(10).max(50000),
+  computeScore: z.number().int().min(10).max(50000),
+  sustainedScore: z.number().int().min(10).max(50000),
   subScores: z.object({
     graphics: benchmarkSubScoreSchema,
     compute: benchmarkSubScoreSchema,
@@ -248,41 +248,41 @@ export function isSubmissionPlausible(
     const scoreShapeLooksValid =
       cpuRunMode === "full"
         ? Boolean(subScores.singleCore && subScores.multiCore && subScores.sustained) &&
-          input.result.singleCoreScore !== null &&
-          input.result.multiCoreScore !== null &&
-          input.result.sustainedScore !== null &&
-          rawMetrics.singleCoreDurationMs > 0 &&
-          rawMetrics.multiCoreDurationMs > 0 &&
-          rawMetrics.sustainedDurationMs > 0 &&
-          rawMetrics.kernelMetrics.singleCore !== null &&
-          rawMetrics.kernelMetrics.multiCore !== null &&
-          rawMetrics.kernelMetrics.sustained !== null
+        input.result.singleCoreScore !== null &&
+        input.result.multiCoreScore !== null &&
+        input.result.sustainedScore !== null &&
+        rawMetrics.singleCoreDurationMs > 0 &&
+        rawMetrics.multiCoreDurationMs > 0 &&
+        rawMetrics.sustainedDurationMs > 0 &&
+        rawMetrics.kernelMetrics.singleCore !== null &&
+        rawMetrics.kernelMetrics.multiCore !== null &&
+        rawMetrics.kernelMetrics.sustained !== null
         : cpuRunMode === "singleCore"
           ? Boolean(subScores.singleCore) &&
-            !subScores.multiCore &&
-            !subScores.sustained &&
-            input.result.singleCoreScore !== null &&
-            input.result.multiCoreScore === null &&
-            input.result.sustainedScore === null &&
-            rawMetrics.singleCoreDurationMs > 0 &&
-            rawMetrics.multiCoreDurationMs === 0 &&
-            rawMetrics.sustainedDurationMs === 0 &&
-            rawMetrics.kernelMetrics.singleCore !== null &&
-            rawMetrics.kernelMetrics.multiCore === null &&
-            rawMetrics.kernelMetrics.sustained === null &&
-            rawMetrics.workerCount === 1
+          !subScores.multiCore &&
+          !subScores.sustained &&
+          input.result.singleCoreScore !== null &&
+          input.result.multiCoreScore === null &&
+          input.result.sustainedScore === null &&
+          rawMetrics.singleCoreDurationMs > 0 &&
+          rawMetrics.multiCoreDurationMs === 0 &&
+          rawMetrics.sustainedDurationMs === 0 &&
+          rawMetrics.kernelMetrics.singleCore !== null &&
+          rawMetrics.kernelMetrics.multiCore === null &&
+          rawMetrics.kernelMetrics.sustained === null &&
+          rawMetrics.workerCount === 1
           : Boolean(subScores.multiCore) &&
-            !subScores.singleCore &&
-            !subScores.sustained &&
-            input.result.singleCoreScore === null &&
-            input.result.multiCoreScore !== null &&
-            input.result.sustainedScore === null &&
-            rawMetrics.singleCoreDurationMs === 0 &&
-            rawMetrics.multiCoreDurationMs > 0 &&
-            rawMetrics.sustainedDurationMs === 0 &&
-            rawMetrics.kernelMetrics.singleCore === null &&
-            rawMetrics.kernelMetrics.multiCore !== null &&
-            rawMetrics.kernelMetrics.sustained === null;
+          !subScores.singleCore &&
+          !subScores.sustained &&
+          input.result.singleCoreScore === null &&
+          input.result.multiCoreScore !== null &&
+          input.result.sustainedScore === null &&
+          rawMetrics.singleCoreDurationMs === 0 &&
+          rawMetrics.multiCoreDurationMs > 0 &&
+          rawMetrics.sustainedDurationMs === 0 &&
+          rawMetrics.kernelMetrics.singleCore === null &&
+          rawMetrics.kernelMetrics.multiCore !== null &&
+          rawMetrics.kernelMetrics.sustained === null;
 
     return (
       durationLooksValid &&
