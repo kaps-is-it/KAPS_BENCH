@@ -43,3 +43,7 @@ export function createDevResult(
 export function getDevResult(id: string) {
   return getStore().get(id) ?? null;
 }
+
+export function listDevResults() {
+  return Array.from(getStore().values());
+}

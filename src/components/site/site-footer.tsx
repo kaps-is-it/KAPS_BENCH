@@ -29,7 +29,7 @@ export function SiteFooter() {
           <Link href="/#about" className="transition-colors hover:text-slate-950">
             Docs
           </Link>
-          <Link href="/#leaderboard" className="transition-colors hover:text-slate-950">
+          <Link href="/leaderboard" className="transition-colors hover:text-slate-950">
             Leaderboard
           </Link>
           <span>© 2026 {APP_NAME}</span>

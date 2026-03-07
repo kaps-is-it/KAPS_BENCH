@@ -1,8 +1,17 @@
 import type { User } from "@supabase/supabase-js";
+import {
+  dedupeLeaderboardResults,
+  matchesLeaderboardScope,
+  type LeaderboardScope,
+} from "@/lib/leaderboard";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import type { Database } from "@/lib/supabase/database.types";
 import { shouldUseDevResultStore } from "@/lib/env";
-import { createDevResult, getDevResult } from "@/lib/server/dev-result-store";
+import {
+  createDevResult,
+  getDevResult,
+  listDevResults,
+} from "@/lib/server/dev-result-store";
 import type {
   BenchmarkResultUser,
   BenchmarkSubmissionPayload,
@@ -14,6 +23,7 @@ import type {
 } from "@/lib/types";
 
 type AdminClient = NonNullable<ReturnType<typeof createSupabaseAdminClient>>;
+type BenchmarkRunRow = Database["public"]["Tables"]["benchmark_runs"]["Row"];
 
 function mapDeviceProfile(
   profile: DeviceProfile,
@@ -247,6 +257,65 @@ async function getDeviceProfileById(admin: AdminClient, id: string) {
   );
 }
 
+function mapBenchmarkRunRow(
+  result: BenchmarkRunRow,
+  mappedDeviceProfile: DeviceProfile,
+  userProfile: BenchmarkResultUser | null,
+): PersistedCpuBenchmarkResult | PersistedGpuBenchmarkResult {
+  if (result.benchmark_kind === "cpu") {
+    const cpuResult =
+      result.raw_metrics as unknown as PersistedCpuBenchmarkResult["rawMetrics"];
+    const subScores =
+      result.sub_scores as unknown as PersistedCpuBenchmarkResult["subScores"];
+
+    return {
+      id: result.id,
+      benchmarkKind: "cpu",
+      headlineScore: result.headline_score,
+      rating: result.rating,
+      benchmarkVersion: result.benchmark_version,
+      createdAt: result.created_at,
+      browserName: result.browser_name,
+      browserVersion: result.browser_version,
+      osPlatform: result.os_platform,
+      deviceProfile: mappedDeviceProfile,
+      user: userProfile,
+      cpuRunMode: cpuResult.runMode ?? "full",
+      cpuScore: result.headline_score,
+      singleCoreScore: subScores.singleCore?.score ?? null,
+      multiCoreScore: subScores.multiCore?.score ?? null,
+      sustainedScore: subScores.sustained?.score ?? null,
+      subScores,
+      rawMetrics: cpuResult,
+    };
+  }
+
+  const gpuResult =
+    result.raw_metrics as unknown as PersistedGpuBenchmarkResult["rawMetrics"];
+  const subScores =
+    result.sub_scores as unknown as PersistedGpuBenchmarkResult["subScores"];
+
+  return {
+    id: result.id,
+    benchmarkKind: "gpu",
+    headlineScore: result.headline_score,
+    rating: result.rating,
+    benchmarkVersion: result.benchmark_version,
+    createdAt: result.created_at,
+    browserName: result.browser_name,
+    browserVersion: result.browser_version,
+    osPlatform: result.os_platform,
+    deviceProfile: mappedDeviceProfile,
+    user: userProfile,
+    gpuScore: result.headline_score,
+    graphicsScore: subScores.graphics.score,
+    computeScore: subScores.compute.score,
+    sustainedScore: subScores.sustained.score,
+    subScores,
+    rawMetrics: gpuResult,
+  };
+}
+
 async function getLegacyCodingResultById(
   admin: AdminClient,
   id: string,
@@ -291,6 +360,113 @@ async function getLegacyCodingResultById(
   };
 }
 
+export async function getBenchmarkLeaderboard({
+  scope,
+  limit = 10,
+}: {
+  scope: LeaderboardScope;
+  limit?: number;
+}): Promise<Array<PersistedCpuBenchmarkResult | PersistedGpuBenchmarkResult>> {
+  if (shouldUseDevResultStore()) {
+    const scopedResults = listDevResults()
+      .filter(
+        (result): result is PersistedCpuBenchmarkResult | PersistedGpuBenchmarkResult =>
+          result.benchmarkKind !== "legacy-coding" &&
+          matchesLeaderboardScope(result, scope),
+      )
+      .sort((left, right) => {
+        if (right.headlineScore !== left.headlineScore) {
+          return right.headlineScore - left.headlineScore;
+        }
+
+        return (
+          new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime()
+        );
+      });
+
+    return dedupeLeaderboardResults(scopedResults, scope, limit);
+  }
+
+  const admin = createSupabaseAdminClient();
+
+  if (!admin) {
+    throw new Error("Supabase is not configured.");
+  }
+
+  const benchmarkKind = scope === "gpu" ? "gpu" : "cpu";
+  let query = admin
+    .from("benchmark_runs")
+    .select()
+    .eq("benchmark_kind", benchmarkKind)
+    .order("headline_score", { ascending: false })
+    .order("created_at", { ascending: false })
+    .limit(Math.max(limit * 6, 30));
+
+  if (scope === "cpu-full") {
+    query = query.contains("raw_metrics", { runMode: "full" });
+  } else if (scope === "cpu-singleCore") {
+    query = query.contains("raw_metrics", { runMode: "singleCore" });
+  } else if (scope === "cpu-multiCore") {
+    query = query.contains("raw_metrics", { runMode: "multiCore" });
+  }
+
+  const runQuery = await query;
+  const runRows = (runQuery.data as BenchmarkRunRow[] | null) ?? [];
+
+  if (runQuery.error || runRows.length === 0) {
+    return [];
+  }
+
+  const deviceProfileIds = Array.from(
+    new Set(runRows.map((row) => row.device_profile_id)),
+  );
+  const userIds = Array.from(
+    new Set(runRows.map((row) => row.user_id).filter(Boolean)),
+  ) as string[];
+
+  const [deviceQuery, profileQuery] = await Promise.all([
+    admin.from("device_profiles").select().in("id", deviceProfileIds),
+    userIds.length
+      ? admin.from("profiles").select().in("id", userIds)
+      : Promise.resolve({ data: [], error: null }),
+  ]);
+
+  const deviceProfiles = new Map(
+    ((deviceQuery.data as Database["public"]["Tables"]["device_profiles"]["Row"][] | null) ??
+      []
+    ).map((profile) => [profile.id, profile]),
+  );
+  const userProfiles = new Map(
+    ((profileQuery.data as Database["public"]["Tables"]["profiles"]["Row"][] | null) ?? []).map(
+      (profile) => [profile.id, profile],
+    ),
+  );
+
+  const mappedResults = runRows
+    .map((row) => {
+      const deviceProfile = deviceProfiles.get(row.device_profile_id);
+
+      if (!deviceProfile) {
+        return null;
+      }
+
+      return mapBenchmarkRunRow(
+        row,
+        mapStoredDeviceProfile(deviceProfile),
+        mapProfileRow(userProfiles.get(row.user_id ?? "") ?? null),
+      );
+    })
+    .filter(
+      (
+        result,
+      ): result is PersistedCpuBenchmarkResult | PersistedGpuBenchmarkResult =>
+        result !== null,
+    )
+    .filter((result) => matchesLeaderboardScope(result, scope));
+
+  return dedupeLeaderboardResults(mappedResults, scope, limit);
+}
+
 export async function getBenchmarkResultById(id: string) {
   if (shouldUseDevResultStore()) {
     return getDevResult(id);
@@ -318,64 +494,11 @@ export async function getBenchmarkResultById(id: string) {
     }
 
     const userProfile = mapProfileRow(await getProfileByUserId(admin, result.user_id));
-    const mappedDeviceProfile = mapStoredDeviceProfile(deviceProfile);
-
-    if (result.benchmark_kind === "cpu") {
-      const cpuResult =
-        result.raw_metrics as unknown as PersistedCpuBenchmarkResult["rawMetrics"];
-      const subScores =
-        result.sub_scores as unknown as PersistedCpuBenchmarkResult["subScores"];
-
-      const mappedResult: PersistedCpuBenchmarkResult = {
-        id: result.id,
-        benchmarkKind: "cpu",
-        headlineScore: result.headline_score,
-        rating: result.rating,
-        benchmarkVersion: result.benchmark_version,
-        createdAt: result.created_at,
-        browserName: result.browser_name,
-        browserVersion: result.browser_version,
-        osPlatform: result.os_platform,
-        deviceProfile: mappedDeviceProfile,
-        user: userProfile,
-        cpuRunMode: cpuResult.runMode ?? "full",
-        cpuScore: result.headline_score,
-        singleCoreScore: subScores.singleCore?.score ?? null,
-        multiCoreScore: subScores.multiCore?.score ?? null,
-        sustainedScore: subScores.sustained?.score ?? null,
-        subScores,
-        rawMetrics: cpuResult,
-      };
-
-      return mappedResult;
-    }
-
-    const gpuResult =
-      result.raw_metrics as unknown as PersistedGpuBenchmarkResult["rawMetrics"];
-    const subScores =
-      result.sub_scores as unknown as PersistedGpuBenchmarkResult["subScores"];
-
-    const mappedResult: PersistedGpuBenchmarkResult = {
-      id: result.id,
-      benchmarkKind: "gpu",
-      headlineScore: result.headline_score,
-      rating: result.rating,
-      benchmarkVersion: result.benchmark_version,
-      createdAt: result.created_at,
-      browserName: result.browser_name,
-      browserVersion: result.browser_version,
-      osPlatform: result.os_platform,
-      deviceProfile: mappedDeviceProfile,
-      user: userProfile,
-      gpuScore: result.headline_score,
-      graphicsScore: subScores.graphics.score,
-      computeScore: subScores.compute.score,
-      sustainedScore: subScores.sustained.score,
-      subScores,
-      rawMetrics: gpuResult,
-    };
-
-    return mappedResult;
+    return mapBenchmarkRunRow(
+      result,
+      mapStoredDeviceProfile(deviceProfile),
+      userProfile,
+    );
   }
 
   return getLegacyCodingResultById(admin, id);

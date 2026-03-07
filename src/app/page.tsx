@@ -1,3 +1,4 @@
+import { unstable_noStore as noStore } from "next/cache";
 import Link from "next/link";
 import {
   ArrowRight,
@@ -14,8 +15,10 @@ import {
   Clapperboard,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { LeaderboardTable } from "@/components/leaderboard/leaderboard-table";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { BENCHMARK_CARD_CONTENT } from "@/lib/branding";
+import { getBenchmarkLeaderboard } from "@/lib/server/result-repository";
 
 const futureModules = [
   {
@@ -45,17 +48,6 @@ const futureModules = [
   },
 ] as const;
 
-const compareCards = [
-  {
-    title: "Shareable result pages",
-    copy: "Every completed CPU and GPU run lands on a public result page you can share directly.",
-  },
-  {
-    title: "Leaderboard calibration",
-    copy: "Public rankings stay locked until the first reference pack is fully tuned for current laptop classes.",
-  },
-] as const;
-
 const steps = [
   {
     step: "1. Detect",
@@ -71,7 +63,14 @@ const steps = [
   },
 ] as const;
 
-export default function Home() {
+export default async function Home() {
+  noStore();
+
+  const [cpuLeaderboard, gpuLeaderboard] = await Promise.all([
+    getBenchmarkLeaderboard({ scope: "cpu-full", limit: 5 }),
+    getBenchmarkLeaderboard({ scope: "gpu", limit: 5 }),
+  ]);
+
   return (
     <div className="pb-24">
       <section className="shell-section grid gap-12 pt-12 lg:grid-cols-[1.02fr_0.98fr] lg:items-center">
@@ -262,20 +261,28 @@ export default function Home() {
       </section>
 
       <section className="shell-section pt-20" id="leaderboard">
-        <div className="grid gap-6 lg:grid-cols-2">
-          {compareCards.map((item) => (
-            <div key={item.title} className="dashboard-card p-7">
-              <p className="text-[0.72rem] font-semibold uppercase tracking-[0.18em] text-primary">
-                Platform roadmap
-              </p>
-              <h3 className="mt-4 text-2xl font-semibold tracking-[-0.05em] text-slate-950">
-                {item.title}
-              </h3>
-              <p className="mt-3 text-base leading-8 text-slate-600">
-                {item.copy}
-              </p>
-            </div>
-          ))}
+        <div className="mb-8 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <h2 className="section-heading">Live Leaderboards</h2>
+            <p className="mt-3 max-w-2xl text-lg text-slate-500">
+              Top saved full CPU runs and GPU runs update from the persisted
+              benchmark database.
+            </p>
+          </div>
+          <Button
+            asChild
+            variant="outline"
+            className="rounded-full border-slate-200 bg-white px-5 text-slate-800 hover:bg-slate-50"
+          >
+            <Link href="/leaderboard">
+              Open full leaderboard
+              <ArrowRight className="size-4" />
+            </Link>
+          </Button>
+        </div>
+        <div className="grid gap-6 xl:grid-cols-2">
+          <LeaderboardTable scope="cpu-full" entries={cpuLeaderboard} compact />
+          <LeaderboardTable scope="gpu" entries={gpuLeaderboard} compact />
         </div>
       </section>
 

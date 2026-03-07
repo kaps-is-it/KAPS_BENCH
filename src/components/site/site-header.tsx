@@ -15,7 +15,7 @@ const navItems = [
   { href: "/benchmark/gpu", label: "GPU" },
   { href: "/#real-world", label: "Real-World" },
   { href: "/#compare", label: "Compare" },
-  { href: "/#leaderboard", label: "Leaderboard" },
+  { href: "/leaderboard", label: "Leaderboard" },
   { href: "/#about", label: "About" },
 ];
 
