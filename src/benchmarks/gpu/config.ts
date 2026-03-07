@@ -114,7 +114,7 @@ const FULL_PRESET: GpuPresetConfig = {
       convolutionCompute: 2_150_000_000,
       simulationCompute: 4_200_000_000,
     },
-    sustained: 2_400_000_000,
+    sustained: 60_000_000_000,
   },
 };
 
