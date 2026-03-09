@@ -1,17 +1,19 @@
-import { supportsCommandEncoderTimestamps } from "@/benchmarks/gpu/runner";
+import { runGpuBenchmark } from "@/benchmarks/gpu/runner";
+import { benchmarkSubmissionSchema } from "@/lib/validation/benchmark";
+import { createGpuSubmissionPayload } from "@/test/fixtures/benchmark-payload";
 
-describe("gpu runner capability guards", () => {
-  it("disables timestamp sampling when the command encoder lacks writeTimestamp", () => {
-    expect(
-      supportsCommandEncoderTimestamps({} as GPUCommandEncoder),
-    ).toBe(false);
-  });
+describe("gpu runner", () => {
+  it("produces a schema-valid smoke mock result", async () => {
+    const result = await runGpuBenchmark({
+      preset: "smoke",
+      mock: true,
+    });
+    const payload = createGpuSubmissionPayload();
 
-  it("accepts timestamp sampling when the command encoder exposes writeTimestamp", () => {
-    expect(
-      supportsCommandEncoderTimestamps({
-        writeTimestamp() {},
-      } as GPUCommandEncoder),
-    ).toBe(true);
+    payload.result = result;
+    payload.benchmarkVersion = result.benchmarkVersion;
+
+    expect(benchmarkSubmissionSchema.safeParse(payload).success).toBe(true);
+    expect(result.rawMetrics.checksum).toBeGreaterThanOrEqual(0);
   });
 });

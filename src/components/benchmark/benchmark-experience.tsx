@@ -1,13 +1,11 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
   ArrowRight,
   BarChart3,
   CheckCircle2,
-  ChevronRight,
   Clock3,
   Cpu,
   Gauge,
@@ -16,7 +14,6 @@ import {
   Layers3,
   LoaderCircle,
   Monitor,
-  Settings2,
   ShieldAlert,
   Sparkles,
   Square,
@@ -24,8 +21,12 @@ import {
 } from "lucide-react";
 import { runCpuBenchmark } from "@/benchmarks/cpu/runner";
 import { runGpuBenchmark } from "@/benchmarks/gpu/runner";
+import {
+  buildLiveProjectionViewModel,
+  shouldRefreshProjectionDisplay,
+  type TimedLiveProjectionViewModel,
+} from "@/benchmarks/shared/live-estimation";
 import { useAuthSession } from "@/components/providers/auth-provider";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { submitBenchmarkResult } from "@/lib/api/benchmark-client";
@@ -39,6 +40,7 @@ import { getBenchmarkSupportState } from "@/lib/browser";
 import { formatApproxMemory } from "@/lib/format-memory";
 import { detectDeviceProfile } from "@/lib/hardware-detect";
 import type {
+  ActiveBenchmarkResult,
   BenchmarkDisplayResult,
   BenchmarkKind,
   BenchmarkPreset,
@@ -100,13 +102,6 @@ const BENCHMARK_COPY: Record<
   },
 };
 
-const sidebarItems = [
-  { label: "Dashboard", icon: Layers3, href: "/" },
-  { label: "Benchmarks", icon: BarChart3, href: null },
-  { label: "History", icon: Clock3, href: "/auth" },
-  { label: "Settings", icon: Settings2, href: "/auth" },
-] as const;
-
 function getPreviewCards(benchmarkKind: BenchmarkKind) {
   if (benchmarkKind === "cpu") {
     return [
@@ -164,8 +159,402 @@ function getPreviewScores(
   return [null, null, null] as const;
 }
 
+function buildCompletedTelemetry(
+  result: ActiveBenchmarkResult,
+): BenchmarkTelemetry {
+  if (result.benchmarkKind === "cpu") {
+    const liveScores =
+      result.cpuRunMode === "singleCore"
+        ? [
+          {
+            id: "singleCore",
+            label: "Single-core live",
+            score: result.singleCoreScore,
+            status: "complete" as const,
+          },
+        ]
+        : result.cpuRunMode === "multiCore"
+          ? [
+            {
+              id: "multiCore",
+              label: "Multi-core live",
+              score: result.multiCoreScore,
+              status: "complete" as const,
+            },
+          ]
+          : [
+            {
+              id: "singleCore",
+              label: "Single-core live",
+              score: result.singleCoreScore,
+              status: "complete" as const,
+            },
+            {
+              id: "multiCore",
+              label: "Multi-core live",
+              score: result.multiCoreScore,
+              status: "complete" as const,
+            },
+            {
+              id: "sustained",
+              label: "Sustained live",
+              score: result.sustainedScore,
+              status: "complete" as const,
+            },
+          ];
+
+    return {
+      title: "CPU run complete",
+      summary: "Final CPU result computed.",
+      liveScores,
+      metrics: [
+        {
+          label: "Completed sections",
+          value:
+            result.cpuRunMode === "full"
+              ? "Single-core + multi-core + sustained"
+              : result.cpuRunMode === "singleCore"
+                ? "Single-core only"
+                : "Multi-core only",
+        },
+      ],
+      activity: [],
+      projection: {
+        projectedScore: result.headlineScore,
+      },
+    };
+  }
+
+  return {
+    title: "GPU run complete",
+    summary: "Final GPU result computed.",
+    liveScores: [
+      {
+        id: "graphics",
+        label: "Graphics live",
+        score: result.graphicsScore,
+        status: "complete",
+      },
+      {
+        id: "compute",
+        label: "Compute live",
+        score: result.computeScore,
+        status: "complete",
+      },
+      {
+        id: "sustained",
+        label: "Sustained live",
+        score: result.sustainedScore,
+        status: "complete",
+      },
+    ],
+    metrics: [
+      {
+        label: "Completed sections",
+        value: "Graphics + compute + sustained",
+      },
+    ],
+    activity: [],
+    projection: {
+      projectedScore: averageAvailableScores(
+        result.graphicsScore,
+        result.computeScore,
+      ),
+    },
+  };
+}
+
 function createHistorySeed() {
   return Array.from({ length: 28 }, () => 0);
+}
+
+function averageAvailableScores(
+  ...scores: Array<number | null | undefined>
+) {
+  const values = scores.filter((value): value is number => value !== null && value !== undefined);
+
+  if (values.length === 0) {
+    return null;
+  }
+
+  return Math.round(values.reduce((sum, value) => sum + value, 0) / values.length);
+}
+
+function getLiveScoreStatusTone(status: BenchmarkLiveScore["status"]) {
+  switch (status) {
+    case "live":
+      return "bg-primary/10 text-primary";
+    case "complete":
+      return "bg-emerald-50 text-emerald-700";
+    default:
+      return "bg-slate-100 text-slate-500";
+  }
+}
+
+function getAggregateLiveStatus(
+  entries: Array<BenchmarkLiveScore | null | undefined>,
+): BenchmarkLiveScore["status"] {
+  const availableEntries = entries.filter(
+    (entry): entry is BenchmarkLiveScore => Boolean(entry),
+  );
+
+  if (availableEntries.length === 0 || availableEntries.every((entry) => entry.score === null)) {
+    return "pending";
+  }
+
+  if (availableEntries.every((entry) => entry.status === "complete" && entry.score !== null)) {
+    return "complete";
+  }
+
+  return "live";
+}
+
+function getProjectedClassTone(projectedClass: string | null) {
+  switch (projectedClass) {
+    case "Flagship":
+      return "border-emerald-200 bg-emerald-50 text-emerald-700";
+    case "High-End":
+      return "border-blue-200 bg-blue-50 text-blue-700";
+    case "Performance":
+      return "border-violet-200 bg-violet-50 text-violet-700";
+    case "Capable":
+      return "border-amber-200 bg-amber-50 text-amber-700";
+    default:
+      return "border-slate-200 bg-slate-100 text-slate-600";
+  }
+}
+
+function getConfidenceTone(confidence: number | null) {
+  if (confidence === null) {
+    return "bg-slate-300";
+  }
+
+  if (confidence >= 85) {
+    return "bg-emerald-500";
+  }
+
+  if (confidence >= 65) {
+    return "bg-primary";
+  }
+
+  if (confidence >= 40) {
+    return "bg-amber-500";
+  }
+
+  return "bg-slate-400";
+}
+
+type ProjectionInfoKey =
+  | "projectedClass"
+  | "confidence"
+  | "projectedScore";
+
+function getProjectionInfoContent(
+  infoKey: ProjectionInfoKey,
+  projectedScore: number | null,
+) {
+  switch (infoKey) {
+    case "projectedClass":
+      return {
+        title: "Projected class",
+        description:
+          "Uses the current benchmark score bands, based on the live headline estimate.",
+      };
+    case "confidence":
+      return {
+        title: "Confidence",
+        description:
+          "Confidence rises as more sections finish and the estimate stops moving around.",
+      };
+    case "projectedScore":
+      return {
+        title: "Projected final score",
+        description:
+          projectedScore !== null
+            ? `Locks onto the first calibrated estimate, currently ${projectedScore.toLocaleString()}, and keeps that target steady on-screen. Confidence captures how well the ongoing run is validating it.`
+            : "Waiting for the first measured samples before estimating a projected score.",
+      };
+  }
+}
+
+function ProjectionInfoButton({
+  className,
+  infoKey,
+  label,
+  openInfoKey,
+  setOpenInfoKey,
+}: {
+  className?: string;
+  infoKey: ProjectionInfoKey;
+  label: string;
+  openInfoKey: ProjectionInfoKey | null;
+  setOpenInfoKey: (infoKey: ProjectionInfoKey | null) => void;
+}) {
+  const isOpen = openInfoKey === infoKey;
+
+  return (
+    <div
+      data-projection-info-root
+      className={cn("relative shrink-0", className)}
+    >
+      <button
+        type="button"
+        aria-expanded={isOpen}
+        aria-label={`${label} info`}
+        className={cn(
+          "flex size-7 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-400 shadow-sm transition",
+          "hover:border-primary/30 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/25",
+          isOpen && "border-primary/25 text-primary",
+        )}
+        onPointerDown={(event) => {
+          event.stopPropagation();
+        }}
+        onClick={(event) => {
+          event.stopPropagation();
+          setOpenInfoKey(isOpen ? null : infoKey);
+        }}
+      >
+        <Info className="size-4" />
+      </button>
+    </div>
+  );
+}
+
+function ProjectionInfoPanel({
+  description,
+  title,
+}: {
+  description: string;
+  title: string;
+}) {
+  return (
+    <div
+      data-projection-info-panel
+      className="absolute inset-x-3 top-12 z-20 rounded-[1rem] border border-slate-200 bg-white/98 p-3.5 shadow-[0_18px_36px_rgba(15,23,42,0.12)] backdrop-blur-sm"
+    >
+      <div className="flex items-start gap-3">
+        <div className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-full border border-primary/15 bg-primary/8 text-primary">
+          <Info className="size-4" />
+        </div>
+        <div className="min-w-0">
+          <p className="text-sm font-semibold tracking-[-0.02em] text-slate-950">
+            {title}
+          </p>
+          <p className="mt-1 text-sm leading-6 text-slate-600">
+            {description}
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function formatProjectionUncertaintyBand(
+  projectedRange: { low: number; high: number } | null,
+) {
+  if (!projectedRange) {
+    return "";
+  }
+
+  return ` Internal uncertainty band: ${projectedRange.low.toLocaleString()} - ${projectedRange.high.toLocaleString()}.`;
+}
+
+function getProjectedScoreMeta({
+  benchmarkKind,
+  cpuRunMode,
+  liveScores,
+  projectedScore,
+  projectedRange,
+}: {
+  benchmarkKind: BenchmarkKind;
+  cpuRunMode: CpuRunMode;
+  liveScores: BenchmarkLiveScore[];
+  projectedScore: number | null;
+  projectedRange: { low: number; high: number } | null;
+}) {
+  if (benchmarkKind === "gpu") {
+    const graphicsEntry = liveScores.find((entry) => entry.id === "graphics");
+    const computeEntry = liveScores.find((entry) => entry.id === "compute");
+
+    if (
+      (!graphicsEntry || graphicsEntry.status === "pending") &&
+      (!computeEntry || computeEntry.status === "pending")
+    ) {
+      return {
+        badge: "Overall",
+        title: "Projected overall score",
+        description:
+          projectedScore !== null
+            ? `Seeded from a short graphics + compute calibration around ${projectedScore.toLocaleString()}. That first calibrated target is held steady on-screen while later samples validate it.${formatProjectionUncertaintyBand(projectedRange)}`
+            : "Waiting for the calibration pass before estimating the overall GPU score.",
+      };
+    }
+
+    return {
+      badge: "Overall",
+      title: "Projected overall score",
+      description:
+        projectedScore !== null
+          ? `Shows the locked overall GPU target from the graphics + compute path, currently ${projectedScore.toLocaleString()}. Confidence reflects how much uncertainty is still left while the run validates that target.${formatProjectionUncertaintyBand(projectedRange)}`
+          : "Waiting for the first measured GPU samples before estimating the overall score.",
+    };
+  }
+
+  if (cpuRunMode === "singleCore") {
+    return {
+      badge: "Single-core",
+      title: "Projected single-core score",
+      description:
+        projectedScore !== null
+          ? `Shows the locked single-core target, currently ${projectedScore.toLocaleString()}, while confidence continues validating it.${formatProjectionUncertaintyBand(projectedRange)}`
+          : "Waiting for single-core samples before estimating the single-core score.",
+    };
+  }
+
+  if (cpuRunMode === "multiCore") {
+    return {
+      badge: "Multi-core",
+      title: "Projected multi-core score",
+      description:
+        projectedScore !== null
+          ? `Shows the locked multi-core target, currently ${projectedScore.toLocaleString()}, while confidence continues validating it.${formatProjectionUncertaintyBand(projectedRange)}`
+          : "Waiting for multi-core samples before estimating the multi-core score.",
+    };
+  }
+
+  const multiCoreEntry = liveScores.find((entry) => entry.id === "multiCore");
+  const sustainedEntry = liveScores.find((entry) => entry.id === "sustained");
+
+  if (!multiCoreEntry || multiCoreEntry.status === "pending") {
+    return {
+      badge: "Multi-core",
+      title: "Projected multi-core score",
+      description:
+        projectedScore !== null
+          ? `Seeded from a short multi-core calibration around ${projectedScore.toLocaleString()}. That first calibrated target is held steady on-screen while the heavier sections validate it.${formatProjectionUncertaintyBand(projectedRange)}`
+          : "Waiting for the calibration pass before estimating the multi-core score.",
+    };
+  }
+
+  if (!sustainedEntry || sustainedEntry.status !== "complete") {
+    return {
+      badge: "Multi-core",
+      title: "Projected multi-core score",
+      description:
+        projectedScore !== null
+          ? `Shows the locked full CPU target, currently anchored to ${projectedScore.toLocaleString()}, while sustained load continues validating it.${formatProjectionUncertaintyBand(projectedRange)}`
+          : "Waiting for enough multi-core samples before estimating the score.",
+    };
+  }
+
+  return {
+    badge: "Final",
+    title: "Projected final score",
+    description:
+      projectedScore !== null
+        ? `Shows the locked final target, currently ${projectedScore.toLocaleString()}, while confidence reflects how much uncertainty is still left.${formatProjectionUncertaintyBand(projectedRange)}`
+        : "Waiting for the first measured samples before estimating the final score.",
+  };
 }
 
 function getDefaultLiveScores(
@@ -313,10 +702,25 @@ export function BenchmarkExperience({
   const [selectedCpuRunMode, setSelectedCpuRunMode] = useState<CpuRunMode>("full");
   const [submissionWarning, setSubmissionWarning] = useState<string | null>(null);
   const [liveTelemetry, setLiveTelemetry] = useState<BenchmarkTelemetry | null>(null);
+  const [liveProjection, setLiveProjection] =
+    useState<TimedLiveProjectionViewModel | null>(null);
+  const [lockedProjection, setLockedProjection] = useState<{
+    projectedScore: number;
+    projectedClass: string;
+  } | null>(null);
+  const [openProjectionInfoKey, setOpenProjectionInfoKey] =
+    useState<ProjectionInfoKey | null>(null);
   const [activityHistory, setActivityHistory] = useState<number[]>(() =>
     createHistorySeed(),
   );
   const abortControllerRef = useRef<AbortController | null>(null);
+  const isProfilingDeviceRef = useRef(false);
+  const liveProjectionRef = useRef<TimedLiveProjectionViewModel | null>(null);
+  const lockedProjectionRef = useRef<{
+    projectedScore: number;
+    projectedClass: string;
+  } | null>(null);
+  const projectionHistoryRef = useRef<number[]>([]);
 
   function stopBenchmark() {
     if (abortControllerRef.current) {
@@ -337,10 +741,61 @@ export function BenchmarkExperience({
   }
 
   useEffect(() => {
-    void profileDevice();
-    return () => reset();
+    stopBenchmark();
+    reset();
+    resetLiveSurface();
+    setSupportMessage(null);
+    setOpenProjectionInfoKey(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [benchmarkKind]);
+
+  useEffect(() => {
+    if (
+      runState !== "idle" ||
+      deviceProfile ||
+      error ||
+      isProfilingDeviceRef.current
+    ) {
+      return;
+    }
+
+    void profileDevice();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [benchmarkKind, deviceProfile, error, runState]);
+
+  useEffect(() => {
+    return () => {
+      stopBenchmark();
+    };
+  }, []);
+
+  useEffect(() => {
+    function handlePointerDown(event: PointerEvent) {
+      if (
+        event.target instanceof Element &&
+        (event.target.closest("[data-projection-info-root]") ||
+          event.target.closest("[data-projection-info-panel]"))
+      ) {
+        return;
+      }
+
+      setOpenProjectionInfoKey(null);
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setOpenProjectionInfoKey(null);
+      }
+    }
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, []);
 
   const support = deviceProfile ? getSupport(deviceProfile.capabilities) : null;
   const memorySummary = formatApproxMemory(deviceProfile?.deviceMemoryGb);
@@ -352,6 +807,54 @@ export function BenchmarkExperience({
     liveTelemetry?.activity.length
       ? liveTelemetry.activity
       : getPlaceholderActivity(benchmarkKind);
+  const gpuGraphicsLiveEntry =
+    benchmarkKind === "gpu"
+      ? liveScores.find((entry) => entry.id === "graphics") ?? null
+      : null;
+  const gpuComputeLiveEntry =
+    benchmarkKind === "gpu"
+      ? liveScores.find((entry) => entry.id === "compute") ?? null
+      : null;
+  const gpuSustainedLiveEntry =
+    benchmarkKind === "gpu"
+      ? liveScores.find((entry) => entry.id === "sustained") ?? null
+      : null;
+  const gpuOverallLiveScore =
+    benchmarkKind === "gpu"
+      ? averageAvailableScores(
+        gpuGraphicsLiveEntry?.score ?? null,
+        gpuComputeLiveEntry?.score ?? null,
+      )
+      : null;
+  const gpuOverallLiveStatus =
+    benchmarkKind === "gpu"
+      ? getAggregateLiveStatus([gpuGraphicsLiveEntry, gpuComputeLiveEntry])
+      : "pending";
+  const gpuOverallPreviewScore =
+    benchmarkKind === "gpu" && result?.benchmarkKind === "gpu"
+      ? averageAvailableScores(result.graphicsScore, result.computeScore)
+      : null;
+  const projectedClass =
+    lockedProjection?.projectedClass ?? liveProjection?.projectedClass ?? null;
+  const projectedConfidence = liveProjection?.confidence ?? null;
+  const projectedRange = liveProjection?.range ?? null;
+  const projectedScore =
+    lockedProjection?.projectedScore ?? liveProjection?.projectedScore ?? null;
+  const projectedClassInfo = getProjectionInfoContent(
+    "projectedClass",
+    projectedScore,
+  );
+  const projectedConfidenceInfo = getProjectionInfoContent(
+    "confidence",
+    projectedScore,
+  );
+  const projectedScoreMeta = getProjectedScoreMeta({
+    benchmarkKind,
+    cpuRunMode: selectedCpuRunMode,
+    liveScores,
+    projectedScore,
+    projectedRange,
+  });
   const hasLocalOnlyResult =
     runState === "completed" &&
     Boolean(submissionWarning) &&
@@ -361,17 +864,80 @@ export function BenchmarkExperience({
 
   function resetLiveSurface() {
     setLiveTelemetry(null);
+    setLiveProjection(null);
+    setLockedProjection(null);
     setActivityHistory(createHistorySeed());
+    liveProjectionRef.current = null;
+    lockedProjectionRef.current = null;
+    projectionHistoryRef.current = [];
   }
 
-  function handleProgressUpdate(update: BenchmarkProgressUpdate) {
+  function syncProjectionSurface({
+    telemetry,
+    progress: nextProgress,
+    cpuRunMode = selectedCpuRunMode,
+    force = false,
+  }: {
+    telemetry: BenchmarkTelemetry;
+    progress: number;
+    cpuRunMode?: CpuRunMode;
+    force?: boolean;
+  }) {
+    setLiveTelemetry(telemetry);
+
+    const nextProjection = buildLiveProjectionViewModel({
+      benchmarkKind,
+      cpuRunMode,
+      progress: nextProgress,
+      telemetry,
+      recentProjectedScores: projectionHistoryRef.current,
+    });
+
+    if (!nextProjection) {
+      return;
+    }
+
+    if (!lockedProjectionRef.current) {
+      const initialProjection = {
+        projectedScore: nextProjection.projectedScore,
+        projectedClass: nextProjection.projectedClass,
+      };
+
+      lockedProjectionRef.current = initialProjection;
+      setLockedProjection(initialProjection);
+    }
+
+    projectionHistoryRef.current = [
+      ...projectionHistoryRef.current.slice(-7),
+      nextProjection.projectedScore,
+    ];
+
+    const now = Date.now();
+
+    if (
+      force ||
+      shouldRefreshProjectionDisplay(liveProjectionRef.current, nextProjection, now)
+    ) {
+      const nextDisplay = {
+        ...nextProjection,
+        updatedAt: now,
+      };
+
+      liveProjectionRef.current = nextDisplay;
+      setLiveProjection(nextDisplay);
+    }
+  }
+
+  function handleProgressUpdate(
+    update: BenchmarkProgressUpdate,
+    cpuRunMode: CpuRunMode = selectedCpuRunMode,
+  ) {
     setProgress(update.progress, update.label, update.message);
 
     if (!update.telemetry) {
       return;
     }
 
-    setLiveTelemetry(update.telemetry);
     const activityLevel =
       update.telemetry.activity.length > 0
         ? update.telemetry.activity.reduce(
@@ -384,11 +950,26 @@ export function BenchmarkExperience({
       ...previous.slice(-(createHistorySeed().length - 1)),
       activityLevel,
     ]);
+
+    syncProjectionSurface({
+      telemetry: update.telemetry,
+      progress: update.progress,
+      cpuRunMode,
+    });
   }
 
   async function profileDevice() {
+    if (isProfilingDeviceRef.current) {
+      return;
+    }
+
+    isProfilingDeviceRef.current = true;
+
     try {
+      stopBenchmark();
+      reset();
       resetLiveSurface();
+      setSupportMessage(null);
       setRunState("detecting");
       setProgress(8, "Device detection", "Collecting browser hardware signals.");
 
@@ -411,6 +992,8 @@ export function BenchmarkExperience({
           ? profileError.message
           : "Device detection failed.",
       );
+    } finally {
+      isProfilingDeviceRef.current = false;
     }
   }
 
@@ -452,7 +1035,7 @@ export function BenchmarkExperience({
             runMode: cpuRunMode,
             abortSignal: abortController.signal,
             onProgress: (update) => {
-              handleProgressUpdate(update);
+              handleProgressUpdate(update, cpuRunMode);
             },
           })
           : await runGpuBenchmark({
@@ -465,6 +1048,15 @@ export function BenchmarkExperience({
           });
 
       setResult(benchmarkResult);
+      syncProjectionSurface({
+        telemetry: buildCompletedTelemetry(benchmarkResult),
+        progress: 96,
+        cpuRunMode:
+          benchmarkResult.benchmarkKind === "cpu"
+            ? benchmarkResult.cpuRunMode
+            : selectedCpuRunMode,
+        force: true,
+      });
 
       setProgress(98, "Persisting result", "Submitting the result payload.");
       setIsSubmitting(true);
@@ -527,44 +1119,6 @@ export function BenchmarkExperience({
       setIsSubmitting(false);
     }
   }
-
-  const parameterCards =
-    benchmarkKind === "cpu"
-      ? [
-        {
-          label: "Mode",
-          value:
-            selectedCpuRunMode === "singleCore"
-              ? "Single-core only"
-              : selectedCpuRunMode === "multiCore"
-                ? "Multi-core only"
-                : "Full CPU benchmark",
-        },
-        {
-          label: "Threads",
-          value: deviceProfile
-            ? `Auto (${deviceProfile.cpuLogicalCores} logical)`
-            : "Auto (max)",
-        },
-        {
-          label: "Duration",
-          value: cpuModeDuration,
-        },
-        {
-          label: "Stability",
-          value:
-            selectedCpuRunMode === "full"
-              ? "Sustained mixed load"
-              : "Not included in this run",
-        },
-        { label: "Engine", value: "Workers + WASM" },
-      ]
-      : [
-        { label: "Adapter", value: "High performance" },
-        { label: "Duration", value: copy.duration },
-        { label: "Renderer", value: "WebGPU" },
-        { label: "Stability", value: "Mixed render + compute" },
-      ];
 
   return (
     <div className="shell-section pb-24 pt-10">
@@ -702,6 +1256,94 @@ export function BenchmarkExperience({
                 {currentMessage}
               </p>
 
+	              <div className="mt-6 grid gap-4 md:grid-cols-3">
+	                <div className="soft-tile relative p-4">
+	                  <ProjectionInfoButton
+	                    className="absolute right-4 top-4"
+	                    infoKey="projectedClass"
+	                    label="Projected class"
+	                    openInfoKey={openProjectionInfoKey}
+	                    setOpenInfoKey={setOpenProjectionInfoKey}
+	                  />
+	                  <p className="soft-label pr-10">Projected class</p>
+	                  <div className="mt-3">
+	                    <span
+	                      className={cn(
+	                        "rounded-full border px-2 py-0.5 text-[0.62rem] font-semibold uppercase tracking-[0.15em]",
+	                        getProjectedClassTone(projectedClass),
+	                      )}
+	                    >
+	                      {projectedClass ?? "Calibrating"}
+	                    </span>
+	                  </div>
+	                  <p className="mt-4 text-3xl font-semibold tracking-[-0.06em] text-slate-950">
+	                    {projectedClass ?? "--"}
+	                  </p>
+	                  {openProjectionInfoKey === "projectedClass" ? (
+	                    <ProjectionInfoPanel
+	                      title={projectedClassInfo.title}
+	                      description={projectedClassInfo.description}
+	                    />
+	                  ) : null}
+	                </div>
+
+	                <div className="soft-tile relative p-4">
+	                  <ProjectionInfoButton
+	                    className="absolute right-4 top-4"
+	                    infoKey="confidence"
+	                    label="Confidence"
+	                    openInfoKey={openProjectionInfoKey}
+	                    setOpenInfoKey={setOpenProjectionInfoKey}
+	                  />
+	                  <p className="soft-label pr-10">Confidence</p>
+	                  <p className="mt-4 text-3xl font-semibold tracking-[-0.06em] text-slate-950">
+	                    {projectedConfidence !== null ? `${projectedConfidence}%` : "--"}
+	                  </p>
+	                  <div className="mt-4 h-2 rounded-full bg-slate-100">
+	                    <div
+	                      className={cn(
+	                        "h-full rounded-full transition-all",
+	                        getConfidenceTone(projectedConfidence),
+	                      )}
+	                      style={{ width: `${projectedConfidence ?? 0}%` }}
+	                    />
+	                  </div>
+	                  {openProjectionInfoKey === "confidence" ? (
+	                    <ProjectionInfoPanel
+	                      title={projectedConfidenceInfo.title}
+	                      description={projectedConfidenceInfo.description}
+	                    />
+	                  ) : null}
+	                </div>
+
+	                <div className="soft-tile relative p-4">
+	                  <ProjectionInfoButton
+	                    className="absolute right-4 top-4"
+	                    infoKey="projectedScore"
+	                    label="Projected final score"
+	                    openInfoKey={openProjectionInfoKey}
+	                    setOpenInfoKey={setOpenProjectionInfoKey}
+	                  />
+	                  <p className="soft-label pr-10">Projected score</p>
+	                  <div className="mt-3">
+	                    <span className="rounded-full border border-slate-200 bg-slate-100 px-2 py-0.5 text-[0.62rem] font-semibold uppercase tracking-[0.15em] text-slate-600">
+	                      {projectedScoreMeta.badge}
+	                    </span>
+	                  </div>
+	                  <p className="mt-4 text-3xl font-semibold tracking-[-0.06em] text-slate-950">
+	                    {projectedScore !== null
+	                      ? projectedScore.toLocaleString()
+	                      : "--"}
+	                  </p>
+	                  {openProjectionInfoKey === "projectedScore" ? (
+	                    <ProjectionInfoPanel
+	                      title={projectedScoreMeta.title}
+	                      description={projectedScoreMeta.description}
+	                    />
+	                  ) : null}
+	                </div>
+	              </div>
+
               <div className="mt-8">
                 <div className="mb-4 flex items-center justify-between gap-4">
                   <div>
@@ -715,39 +1357,158 @@ export function BenchmarkExperience({
                   </div>
                 </div>
 
-                <div
-                  className={cn(
-                    "grid gap-4",
-                    liveScores.length === 1
-                      ? "md:grid-cols-1"
-                      : liveScores.length === 2
-                        ? "md:grid-cols-2"
-                        : "md:grid-cols-3",
-                  )}
-                >
-                  {liveScores.map((entry) => (
-                    <div key={entry.id} className="soft-tile p-5">
-                      <div className="flex flex-wrap items-start justify-between gap-3">
-                        <p className="soft-label max-w-full">{entry.label}</p>
+                {benchmarkKind === "gpu" ? (
+                  <div className="grid gap-4 md:grid-cols-[0.95fr_1.15fr_0.95fr]">
+                    <div className="soft-tile flex min-h-[11.5rem] flex-col border-primary/15 bg-primary/[0.04] p-5">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="soft-label max-w-full">Overall live</p>
+                          <p className="mt-2 text-xs leading-5 text-slate-500">
+                            Primary GPU headline
+                          </p>
+                        </div>
                         <span
                           className={cn(
-                            "rounded-full px-2.5 py-1 text-[0.65rem] font-semibold uppercase tracking-[0.15em] shrink-0",
-                            entry.status === "live"
-                              ? "bg-primary/10 text-primary"
-                              : entry.status === "complete"
-                                ? "bg-emerald-50 text-emerald-700"
-                                : "bg-slate-100 text-slate-500",
+                            "shrink-0 rounded-full px-2.5 py-1 text-[0.65rem] font-semibold uppercase tracking-[0.15em]",
+                            getLiveScoreStatusTone(gpuOverallLiveStatus),
                           )}
                         >
-                          {entry.status}
+                          {gpuOverallLiveStatus}
                         </span>
                       </div>
-                      <p className="mt-4 text-4xl font-semibold tracking-[-0.06em] text-slate-950">
-                        {entry.score !== null ? entry.score.toLocaleString() : "--"}
-                      </p>
+                      <div className="mt-auto">
+                        <p className="text-5xl font-semibold tracking-[-0.06em] text-slate-950">
+                          {gpuOverallLiveScore !== null
+                            ? gpuOverallLiveScore.toLocaleString()
+                            : "--"}
+                        </p>
+                        <p className="mt-2 text-sm leading-6 text-slate-500">
+                          Avg. of graphics and compute.
+                        </p>
+                      </div>
                     </div>
-                  ))}
-                </div>
+
+                    <div className="soft-tile flex min-h-[11.5rem] flex-col p-5">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="soft-label max-w-full">Graphics + compute</p>
+                          <p className="mt-2 text-xs leading-5 text-slate-500">
+                            Secondary breakdown
+                          </p>
+                        </div>
+                        <div className="rounded-full border border-slate-200 bg-slate-100 px-2.5 py-1 text-[0.65rem] font-semibold uppercase tracking-[0.15em] text-slate-600">
+                          Detail
+                        </div>
+                      </div>
+                      <div className="mt-5 space-y-4">
+                        {[
+                          {
+                            entry: gpuGraphicsLiveEntry,
+                            label: "Graphics",
+                          },
+                          {
+                            entry: gpuComputeLiveEntry,
+                            label: "Compute",
+                          },
+                        ].map(({ entry, label }, index) => (
+                          <div
+                            key={entry?.id ?? `gpu-breakdown-${label.toLowerCase()}`}
+                            className={cn(
+                              "flex items-center justify-between gap-4",
+                              index > 0 && "border-t border-slate-200 pt-4",
+                            )}
+                          >
+                            <div className="min-w-0">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <p className="text-[0.68rem] font-semibold uppercase tracking-[0.2em] text-slate-500">
+                                  {label}
+                                </p>
+                                <span
+                                  className={cn(
+                                    "rounded-full px-2 py-0.5 text-[0.58rem] font-semibold uppercase tracking-[0.14em]",
+                                    getLiveScoreStatusTone(entry?.status ?? "pending"),
+                                  )}
+                                >
+                                  {entry?.status ?? "pending"}
+                                </span>
+                              </div>
+                              <p className="mt-1 text-sm leading-6 text-slate-500">
+                                {label === "Graphics"
+                                  ? "Render throughput"
+                                  : "Shader / compute throughput"}
+                              </p>
+                            </div>
+                            <p className="shrink-0 text-3xl font-semibold tracking-[-0.06em] text-slate-950">
+                              {entry?.score !== null && entry?.score !== undefined
+                                ? entry.score.toLocaleString()
+                                : "--"}
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="soft-tile flex min-h-[11.5rem] flex-col p-5">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="soft-label max-w-full">Sustained live</p>
+                          <p className="mt-2 text-xs leading-5 text-slate-500">
+                            Long-run stability
+                          </p>
+                        </div>
+                        <span
+                          className={cn(
+                            "shrink-0 rounded-full px-2.5 py-1 text-[0.65rem] font-semibold uppercase tracking-[0.15em]",
+                            getLiveScoreStatusTone(gpuSustainedLiveEntry?.status ?? "pending"),
+                          )}
+                        >
+                          {gpuSustainedLiveEntry?.status ?? "pending"}
+                        </span>
+                      </div>
+                      <div className="mt-auto">
+                        <p className="text-5xl font-semibold tracking-[-0.06em] text-slate-950">
+                          {gpuSustainedLiveEntry?.score !== null &&
+                          gpuSustainedLiveEntry?.score !== undefined
+                            ? gpuSustainedLiveEntry.score.toLocaleString()
+                            : "--"}
+                        </p>
+                        <p className="mt-2 text-sm leading-6 text-slate-500">
+                          Mixed-load late-run score.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div
+                    className={cn(
+                      "grid gap-4",
+                      liveScores.length === 1
+                        ? "md:grid-cols-1"
+                        : liveScores.length === 2
+                          ? "md:grid-cols-2"
+                          : "md:grid-cols-3",
+                    )}
+                  >
+                    {liveScores.map((entry) => (
+                      <div key={entry.id} className="soft-tile p-5">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <p className="soft-label max-w-full">{entry.label}</p>
+                          <span
+                            className={cn(
+                              "rounded-full px-2.5 py-1 text-[0.65rem] font-semibold uppercase tracking-[0.15em] shrink-0",
+                              getLiveScoreStatusTone(entry.status),
+                            )}
+                          >
+                            {entry.status}
+                          </span>
+                        </div>
+                        <p className="mt-4 text-4xl font-semibold tracking-[-0.06em] text-slate-950">
+                          {entry.score !== null ? entry.score.toLocaleString() : "--"}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
 
               <div className="mt-8 overflow-hidden rounded-[2rem] bg-slate-950 p-6 text-white shadow-[0_28px_60px_rgba(15,23,42,0.24)]">
@@ -875,92 +1636,217 @@ export function BenchmarkExperience({
                     }
                   }
 
+                  const capabilityItems = [
+                    {
+                      label: "WebAssembly",
+                      enabled: deviceProfile.capabilities.webAssembly,
+                    },
+                    {
+                      label: "Workers",
+                      enabled: deviceProfile.capabilities.worker,
+                    },
+                    {
+                      label: "SharedArrayBuffer",
+                      enabled: deviceProfile.capabilities.sharedArrayBuffer,
+                    },
+                    {
+                      label: "Cross-origin isolated",
+                      enabled: deviceProfile.capabilities.crossOriginIsolated,
+                    },
+                    {
+                      label: "WebGPU",
+                      enabled: deviceProfile.capabilities.webgpu,
+                    },
+                  ];
+                  const enabledCapabilityCount = capabilityItems.filter(
+                    (item) => item.enabled,
+                  ).length;
+                  const compactMemoryDetail =
+                    !deviceProfile.deviceMemoryGb
+                      ? "No browser estimate available."
+                      : deviceProfile.deviceMemoryGb >= 8
+                        ? "Browser lower bound. RAM may be higher."
+                        : "Browser lower bound, privacy-rounded.";
+
                   return (
                     <>
-                      <div className="grid gap-5 lg:grid-cols-2">
-                        <div className="flex flex-col justify-start rounded-[1.5rem] border border-slate-200 bg-white shadow-sm p-6 sm:p-8 min-h-[14rem]">
-                          <p className="mb-5 text-xs font-bold uppercase tracking-[0.18em] text-slate-400">
-                            GPU renderer
-                          </p>
-                          <p className="text-2xl font-semibold leading-snug text-slate-900 lg:text-[1.7rem]">
-                            {parsedGpu.main}
-                          </p>
-                          {parsedGpu.sub ? (
-                            <p className="mt-3 text-sm leading-relaxed text-slate-500">
-                              {parsedGpu.sub}
+                      <div className="grid gap-4">
+                        <div
+                          className="relative overflow-hidden rounded-[1.9rem] p-6 text-white shadow-[0_28px_60px_rgba(37,99,235,0.22)] sm:p-8"
+                          style={{
+                            background:
+                              "radial-gradient(circle at top left, rgba(186,230,253,0.28), transparent 28%), radial-gradient(circle at bottom right, rgba(96,165,250,0.24), transparent 32%), linear-gradient(135deg, #0f172a 0%, #1d4ed8 58%, #38bdf8 100%)",
+                          }}
+                        >
+                          <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(135deg,rgba(255,255,255,0.12),transparent_48%,rgba(255,255,255,0.04))]" />
+                          <div className="relative">
+                            <div>
+                              <div className="flex items-center gap-3">
+                                <div className="flex size-11 items-center justify-center rounded-2xl border border-white/15 bg-white/10 backdrop-blur-sm">
+                                  <Sparkles className="size-5 text-sky-100" />
+                                </div>
+                                <div>
+                                  <p className="text-[0.68rem] font-semibold uppercase tracking-[0.24em] text-blue-100/90">
+                                    Primary graphics adapter
+                                  </p>
+                                  <p className="mt-1 text-sm text-blue-100/75">
+                                    Browser-detected renderer profile
+                                  </p>
+                                </div>
+                              </div>
+
+                              <div className="mt-8">
+                                <p className="max-w-xl text-4xl font-semibold leading-[0.94] tracking-[-0.07em] text-white sm:text-5xl">
+                                  {parsedGpu.main}
+                                </p>
+                                {parsedGpu.sub ? (
+                                  <p className="mt-4 max-w-[28rem] text-base leading-7 text-blue-50/82">
+                                    {parsedGpu.sub}
+                                  </p>
+                                ) : (
+                                  <p className="mt-4 max-w-[28rem] text-base leading-7 text-blue-50/82">
+                                    This adapter name is pulled directly from the browser runtime so the hardware identity stays front and center during the run.
+                                  </p>
+                                )}
+                              </div>
+                            </div>
+
+                            <div className="mt-8 grid gap-3 sm:grid-cols-2">
+                              <div className="flex min-h-[11.5rem] flex-col rounded-[1.35rem] border border-white/12 bg-white/10 px-5 py-5 backdrop-blur-sm">
+                                <div className="flex items-center gap-3">
+                                  <div className="flex size-10 items-center justify-center rounded-2xl bg-white/12 text-white">
+                                    <Cpu className="size-4.5" />
+                                  </div>
+                                  <p className="text-[0.68rem] font-semibold uppercase tracking-[0.22em] text-blue-100/88">
+                                    CPU profile
+                                  </p>
+                                </div>
+                                <p className="mt-5 text-4xl font-semibold tracking-[-0.06em] text-white">
+                                  {deviceProfile.cpuLogicalCores}
+                                </p>
+                                <p className="mt-2 max-w-[9rem] text-sm leading-6 text-blue-50/80">
+                                  logical cores detected
+                                </p>
+                              </div>
+
+                              <div className="flex min-h-[11.5rem] flex-col rounded-[1.35rem] border border-white/12 bg-white/10 px-5 py-5 backdrop-blur-sm">
+                                <div className="flex items-center gap-3">
+                                  <div className="flex size-10 items-center justify-center rounded-2xl bg-white/12 text-white">
+                                    <HardDrive className="size-4.5" />
+                                  </div>
+                                  <p className="text-[0.68rem] font-semibold uppercase tracking-[0.22em] text-blue-100/88">
+                                    Approx memory
+                                  </p>
+                                </div>
+                                <p className="mt-5 text-[2.2rem] font-semibold leading-[1.02] tracking-[-0.05em] text-white">
+                                  {memorySummary.value}
+                                </p>
+                                <p className="mt-3 max-w-[12rem] text-sm leading-6 text-blue-50/78">
+                                  {compactMemoryDetail}
+                                </p>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="grid auto-rows-fr gap-4 sm:grid-cols-2">
+                          <div className="soft-tile relative overflow-hidden p-6 pr-20 sm:col-span-2 min-h-[12.5rem]">
+                            <div className="absolute inset-x-6 top-0 h-px bg-gradient-to-r from-primary/0 via-primary/45 to-primary/0" />
+                            <div className="absolute right-5 top-5 flex size-12 items-center justify-center rounded-[1.2rem] bg-primary/10 text-primary">
+                              <Monitor className="size-5" />
+                            </div>
+                            <div>
+                              <p className="soft-label">Display profile</p>
+                              <p className="mt-4 text-[2.9rem] font-semibold leading-[0.92] tracking-[-0.06em] text-slate-950">
+                                {deviceProfile.display.physicalWidth} ×{" "}
+                                {deviceProfile.display.physicalHeight}
+                              </p>
+                              <p className="mt-3 max-w-[15rem] text-sm leading-6 text-slate-500">
+                                Physical panel resolution reported by the browser.
+                              </p>
+                            </div>
+                          </div>
+
+                          <div className="soft-tile flex min-h-[11rem] flex-col p-5 sm:p-6">
+                            <p className="soft-label">Pixel ratio</p>
+                            <p className="mt-5 text-[2.4rem] font-semibold leading-none tracking-[-0.05em] text-slate-950">
+                              {deviceProfile.display.devicePixelRatio.toFixed(2)}x
                             </p>
-                          ) : null}
-                        </div>
-                        <div className="flex flex-col justify-start rounded-[1.5rem] border border-slate-200 bg-white shadow-sm p-6 sm:p-8 min-h-[14rem]">
-                          <p className="mb-5 text-xs font-bold uppercase tracking-[0.18em] text-slate-400">
-                            CPU cores
-                          </p>
-                          <p className="text-2xl font-semibold leading-snug text-slate-900 lg:text-[1.7rem]">
-                            {deviceProfile.cpuLogicalCores} logical cores
-                          </p>
-                        </div>
-                        <div className="flex flex-col justify-start rounded-[1.5rem] border border-slate-200 bg-white shadow-sm p-6 sm:p-8 min-h-[14rem]">
-                          <p className="mb-5 text-xs font-bold uppercase tracking-[0.18em] text-slate-400">
-                            Display
-                          </p>
-                          <p className="text-2xl font-semibold leading-snug text-slate-900 lg:text-[1.7rem]">
-                            {deviceProfile.display.physicalWidth} ×{" "}
-                            {deviceProfile.display.physicalHeight}
-                          </p>
-                        </div>
-                        <div className="flex flex-col justify-start rounded-[1.5rem] border border-slate-200 bg-white shadow-sm p-6 sm:p-8 min-h-[14rem]">
-                          <p className="mb-5 text-xs font-bold uppercase tracking-[0.18em] text-slate-400">
-                            Approx memory
-                          </p>
-                          <p className="text-2xl font-semibold leading-snug text-slate-900 lg:text-[1.7rem]">
-                            {memorySummary.value}
-                          </p>
-                          <p className="mt-3 text-sm leading-relaxed text-slate-500">
-                            {memorySummary.detail}
-                          </p>
+                            <p className="mt-3 max-w-[9rem] text-sm leading-6 text-slate-500">
+                              Active display scale factor.
+                            </p>
+                          </div>
+
+                          <div className="soft-tile flex min-h-[11rem] flex-col p-5 sm:p-6">
+                            <p className="soft-label">Color depth</p>
+                            <p className="mt-5 text-[2.4rem] font-semibold leading-[0.96] tracking-[-0.05em] text-slate-950">
+                              {deviceProfile.display.colorDepth}-bit
+                            </p>
+                            <p className="mt-3 max-w-[9rem] text-sm leading-6 text-slate-500">
+                              Current output color mode.
+                            </p>
+                          </div>
                         </div>
                       </div>
 
-                      <div className="mt-8 flex flex-wrap gap-4">
-                        {[
-                          {
-                            label: "WebAssembly",
-                            enabled: deviceProfile.capabilities.webAssembly,
-                          },
-                          {
-                            label: "Workers",
-                            enabled: deviceProfile.capabilities.worker,
-                          },
-                          {
-                            label: "SharedArrayBuffer",
-                            enabled: deviceProfile.capabilities.sharedArrayBuffer,
-                          },
-                          {
-                            label: "Cross-origin isolated",
-                            enabled: deviceProfile.capabilities.crossOriginIsolated,
-                          },
-                          {
-                            label: "WebGPU",
-                            enabled: deviceProfile.capabilities.webgpu,
-                          },
-                        ].map(({ label, enabled }) => (
-                          <Badge
-                            key={label}
-                            className={cn(
-                              "rounded-full border px-4 py-2 text-sm font-medium",
-                              enabled
-                                ? "border-emerald-300 bg-emerald-50 text-emerald-800"
-                                : "border-slate-200 bg-slate-100 text-slate-500",
-                            )}
-                          >
-                            {enabled ? (
-                              <CheckCircle2 className="size-4 mr-1 text-emerald-600" />
-                            ) : (
-                              <ShieldAlert className="size-4 mr-1 text-slate-400" />
-                            )}
-                            {label}
-                          </Badge>
-                        ))}
+                      <div className="mt-5 overflow-hidden rounded-[1.7rem] border border-slate-200 bg-slate-950 p-5 text-white shadow-[0_24px_50px_rgba(15,23,42,0.14)]">
+                        <div className="flex flex-wrap items-start justify-between gap-4">
+                          <div>
+                            <p className="text-[0.68rem] font-semibold uppercase tracking-[0.24em] text-sky-200/85">
+                              Capability matrix
+                            </p>
+                            <h3 className="mt-3 text-2xl font-semibold tracking-[-0.05em] text-white">
+                              {enabledCapabilityCount}/{capabilityItems.length} runtime features ready
+                            </h3>
+                          </div>
+                          <div className="rounded-full border border-white/12 bg-white/8 px-4 py-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-200">
+                            {deviceProfile.webgpuSupported
+                              ? "Hardware acceleration active"
+                              : "Fallback path only"}
+                          </div>
+                        </div>
+
+                        <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                          {capabilityItems.map(({ label, enabled }) => (
+                            <div
+                              key={label}
+                              className="rounded-[1.25rem] border border-white/8 bg-white/[0.04] px-4 py-4"
+                            >
+                              <div className="flex items-center justify-between gap-3">
+                                <div className="flex items-center gap-3">
+                                  <div
+                                    className={cn(
+                                      "flex size-9 items-center justify-center rounded-full",
+                                      enabled
+                                        ? "bg-emerald-400/12 text-emerald-300"
+                                        : "bg-white/8 text-slate-400",
+                                    )}
+                                  >
+                                    {enabled ? (
+                                      <CheckCircle2 className="size-4" />
+                                    ) : (
+                                      <ShieldAlert className="size-4" />
+                                    )}
+                                  </div>
+                                  <div>
+                                    <p className="text-sm font-semibold text-white">
+                                      {label}
+                                    </p>
+                                    <p className="mt-1 text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-slate-400">
+                                      {enabled ? "Ready" : "Unavailable"}
+                                    </p>
+                                  </div>
+                                </div>
+                                <div
+                                  className={cn(
+                                    "size-2.5 rounded-full",
+                                    enabled ? "bg-emerald-300" : "bg-slate-500",
+                                  )}
+                                />
+                              </div>
+                            </div>
+                          ))}
+                        </div>
                       </div>
                     </>
                   );
@@ -987,59 +1873,38 @@ export function BenchmarkExperience({
               </div>
             </div>
 
-            <div className="grid gap-6 xl:grid-cols-3">
-              {previewCards.map((card, index) => (
-                <div key={card.label} className="dashboard-card min-h-[20rem] p-7">
+            {benchmarkKind === "gpu" ? (
+              <div className="grid gap-6 xl:grid-cols-[1fr_1.1fr_0.95fr]">
+                <div className="dashboard-card min-h-[20rem] p-7">
                   <div className="flex items-center justify-between gap-4">
                     <p className="text-xl font-semibold tracking-[-0.04em] text-slate-900">
-                      {card.label}
+                      Overall GPU Score
                     </p>
-                    <div
-                      className={cn(
-                        "h-3 w-16 rounded-full",
-                        card.tone === "primary" ? "bg-primary/15" : "bg-slate-100",
-                      )}
-                    />
+                    <div className="h-3 w-16 rounded-full bg-primary/15" />
                   </div>
                   <div className="flex min-h-[14rem] flex-col items-center justify-center text-center">
-                    {previewScores[index] !== null ? (
+                    {gpuOverallPreviewScore !== null ? (
                       <>
                         <div className="flex size-28 items-center justify-center rounded-full border-4 border-primary/15 bg-primary/5">
-                          {index === 0 ? (
-                            <BarChart3 className="size-10 text-primary" />
-                          ) : index === 1 ? (
-                            <Layers3 className="size-10 text-primary" />
-                          ) : (
-                            <Zap className="size-10 text-primary" />
-                          )}
+                          <BarChart3 className="size-10 text-primary" />
                         </div>
                         <p className="mt-7 text-5xl font-semibold tracking-[-0.06em] text-slate-950">
-                          {previewScores[index]?.toLocaleString()}
+                          {gpuOverallPreviewScore.toLocaleString()}
                         </p>
                         <p className="mt-4 max-w-xs text-base leading-7 text-slate-500">
-                          {submissionWarning
-                            ? "Stored locally on this page. Leaderboard sync failed for this run."
-                            : "Captured from the latest benchmark run."}
+                          Main GPU headline from the latest run.
                         </p>
                       </>
                     ) : (
                       <>
                         <div className="flex size-28 items-center justify-center rounded-full border-4 border-dashed border-slate-200 bg-slate-50">
-                          {index === 0 ? (
-                            <BarChart3 className="size-10 text-slate-300" />
-                          ) : index === 1 ? (
-                            <Layers3 className="size-10 text-slate-300" />
-                          ) : (
-                            <Zap className="size-10 text-slate-300" />
-                          )}
+                          <BarChart3 className="size-10 text-slate-300" />
                         </div>
                         <p className="mt-7 text-xl font-medium text-slate-500">--</p>
                         <p className="mt-4 max-w-xs text-base leading-7 text-slate-400">
                           {runState === "running"
                             ? "Final scores land here after the selected run completes."
-                            : result && result.benchmarkKind === "cpu"
-                              ? "This score was not part of the selected CPU run."
-                              : "Run benchmark to see score."}
+                            : "Run benchmark to see score."}
                         </p>
                       </>
                     )}
@@ -1047,27 +1912,164 @@ export function BenchmarkExperience({
                   <div className="mt-6 h-4 rounded-full bg-slate-100" />
                   <div className="mt-4 h-4 w-2/3 rounded-full bg-slate-100" />
                 </div>
-              ))}
-            </div>
-          </section>
 
-          <section id="parameters" className="dashboard-card p-7">
-            <div className="mb-6 flex items-center gap-3">
-              <Info className="size-5 text-primary" />
-              <h2 className="text-2xl font-semibold tracking-[-0.04em] text-slate-950">
-                Test parameters
-              </h2>
-            </div>
-            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-              {parameterCards.map((item) => (
-                <div key={item.label} className="soft-tile p-5">
-                  <p className="soft-label">{item.label}</p>
-                  <p className="mt-3 text-2xl font-semibold tracking-[-0.04em] text-slate-950">
-                    {item.value}
-                  </p>
+                <div className="dashboard-card min-h-[20rem] p-7">
+                  <div className="flex items-center justify-between gap-4">
+                    <p className="text-xl font-semibold tracking-[-0.04em] text-slate-900">
+                      Graphics + Compute
+                    </p>
+                    <div className="h-3 w-16 rounded-full bg-slate-100" />
+                  </div>
+                  <div className="mt-8 space-y-5">
+                    {[
+                      {
+                        label: "Graphics score",
+                        icon: <Layers3 className="size-7 text-primary" />,
+                        score:
+                          result?.benchmarkKind === "gpu" ? result.graphicsScore : null,
+                      },
+                      {
+                        label: "Compute score",
+                        icon: <Sparkles className="size-7 text-primary" />,
+                        score:
+                          result?.benchmarkKind === "gpu" ? result.computeScore : null,
+                      },
+                    ].map((entry) => (
+                      <div
+                        key={entry.label}
+                        className="rounded-[1.35rem] border border-slate-200 bg-slate-50/80 px-5 py-4.5"
+                      >
+                        <div className="flex items-center justify-between gap-4">
+                          <div className="flex min-w-0 items-center gap-3">
+                            <div className="flex size-11 items-center justify-center rounded-full border border-primary/15 bg-primary/5">
+                              {entry.icon}
+                            </div>
+                            <div className="min-w-0">
+                              <p className="text-sm font-semibold uppercase tracking-[0.18em] text-slate-500">
+                                {entry.label}
+                              </p>
+                              <p className="mt-1 text-sm leading-6 text-slate-500">
+                                {entry.label === "Graphics score"
+                                  ? "Render-focused throughput result."
+                                  : "Compute-focused throughput result."}
+                              </p>
+                            </div>
+                          </div>
+                          {entry.score !== null ? (
+                            <p className="shrink-0 text-4xl font-semibold tracking-[-0.06em] text-slate-950">
+                              {entry.score.toLocaleString()}
+                            </p>
+                          ) : (
+                            <p className="text-xl font-medium text-slate-500">--</p>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
-              ))}
-            </div>
+
+                <div className="dashboard-card min-h-[20rem] p-7">
+                  <div className="flex items-center justify-between gap-4">
+                    <p className="text-xl font-semibold tracking-[-0.04em] text-slate-900">
+                      Sustained Score
+                    </p>
+                    <div className="h-3 w-16 rounded-full bg-slate-100" />
+                  </div>
+                  <div className="flex min-h-[14rem] flex-col items-center justify-center text-center">
+                    {result?.benchmarkKind === "gpu" ? (
+                      <>
+                        <div className="flex size-28 items-center justify-center rounded-full border-4 border-primary/15 bg-primary/5">
+                          <Zap className="size-10 text-primary" />
+                        </div>
+                        <p className="mt-7 text-5xl font-semibold tracking-[-0.06em] text-slate-950">
+                          {result.sustainedScore.toLocaleString()}
+                        </p>
+                        <p className="mt-4 max-w-xs text-base leading-7 text-slate-500">
+                          Late-run mixed GPU stability under sustained pressure.
+                        </p>
+                      </>
+                    ) : (
+                      <>
+                        <div className="flex size-28 items-center justify-center rounded-full border-4 border-dashed border-slate-200 bg-slate-50">
+                          <Zap className="size-10 text-slate-300" />
+                        </div>
+                        <p className="mt-7 text-xl font-medium text-slate-500">--</p>
+                        <p className="mt-4 max-w-xs text-base leading-7 text-slate-400">
+                          {runState === "running"
+                            ? "Final scores land here after the selected run completes."
+                            : "Run benchmark to see score."}
+                        </p>
+                      </>
+                    )}
+                  </div>
+                  <div className="mt-6 h-4 rounded-full bg-slate-100" />
+                  <div className="mt-4 h-4 w-2/3 rounded-full bg-slate-100" />
+                </div>
+              </div>
+            ) : (
+              <div className="grid gap-6 xl:grid-cols-3">
+                {previewCards.map((card, index) => (
+                  <div key={card.label} className="dashboard-card min-h-[20rem] p-7">
+                    <div className="flex items-center justify-between gap-4">
+                      <p className="text-xl font-semibold tracking-[-0.04em] text-slate-900">
+                        {card.label}
+                      </p>
+                      <div
+                        className={cn(
+                          "h-3 w-16 rounded-full",
+                          card.tone === "primary" ? "bg-primary/15" : "bg-slate-100",
+                        )}
+                      />
+                    </div>
+                    <div className="flex min-h-[14rem] flex-col items-center justify-center text-center">
+                      {previewScores[index] !== null ? (
+                        <>
+                          <div className="flex size-28 items-center justify-center rounded-full border-4 border-primary/15 bg-primary/5">
+                            {index === 0 ? (
+                              <BarChart3 className="size-10 text-primary" />
+                            ) : index === 1 ? (
+                              <Layers3 className="size-10 text-primary" />
+                            ) : (
+                              <Zap className="size-10 text-primary" />
+                            )}
+                          </div>
+                          <p className="mt-7 text-5xl font-semibold tracking-[-0.06em] text-slate-950">
+                            {previewScores[index]?.toLocaleString()}
+                          </p>
+                          <p className="mt-4 max-w-xs text-base leading-7 text-slate-500">
+                            {submissionWarning
+                              ? "Stored locally on this page. Leaderboard sync failed for this run."
+                              : "Captured from the latest benchmark run."}
+                          </p>
+                        </>
+                      ) : (
+                        <>
+                          <div className="flex size-28 items-center justify-center rounded-full border-4 border-dashed border-slate-200 bg-slate-50">
+                            {index === 0 ? (
+                              <BarChart3 className="size-10 text-slate-300" />
+                            ) : index === 1 ? (
+                              <Layers3 className="size-10 text-slate-300" />
+                            ) : (
+                              <Zap className="size-10 text-slate-300" />
+                            )}
+                          </div>
+                          <p className="mt-7 text-xl font-medium text-slate-500">--</p>
+                          <p className="mt-4 max-w-xs text-base leading-7 text-slate-400">
+                            {runState === "running"
+                              ? "Final scores land here after the selected run completes."
+                              : result && result.benchmarkKind === "cpu"
+                                ? "This score was not part of the selected CPU run."
+                                : "Run benchmark to see score."}
+                          </p>
+                        </>
+                      )}
+                    </div>
+                    <div className="mt-6 h-4 rounded-full bg-slate-100" />
+                    <div className="mt-4 h-4 w-2/3 rounded-full bg-slate-100" />
+                  </div>
+                ))}
+              </div>
+            )}
           </section>
 
           {support && !support.supported ? (

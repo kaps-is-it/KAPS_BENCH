@@ -1,9 +1,15 @@
 import { BENCHMARK_VERSION } from "@/lib/branding";
-import { CPU_SUITE_LABELS, getCpuPreset } from "@/benchmarks/cpu/config";
+import {
+  CPU_KERNEL_WEIGHTS,
+  CPU_SCORE_CURVES,
+  CPU_SUITE_LABELS,
+  getCpuPreset,
+} from "@/benchmarks/cpu/config";
 import {
   calculateCpuAggregateSubScore,
   calculateCpuScore,
 } from "@/benchmarks/cpu/scoring";
+import { calculateCpuProjectedHeadlineScore } from "@/benchmarks/shared/live-estimation";
 import type {
   BenchmarkActivityEntry,
   BenchmarkLiveScore,
@@ -11,7 +17,12 @@ import type {
   BenchmarkTelemetryMetric,
 } from "@/benchmarks/shared/progress";
 import { resolveBenchmarkPreset } from "@/benchmarks/shared/preset";
-import { combineChecksums, roundMetric } from "@/benchmarks/shared/scoring";
+import {
+  combineChecksums,
+  roundMetric,
+  scoreFromRatio,
+  weightedGeometricMean,
+} from "@/benchmarks/shared/scoring";
 import type {
   BenchmarkPreset,
   CpuBenchmarkResult,
@@ -74,6 +85,12 @@ type CpuWorkerClient = {
 };
 
 const CPU_KERNEL_ORDER = Object.keys(CPU_SUITE_LABELS) as CpuKernelId[];
+const CPU_PROJECTION_PROBE_KERNELS: CpuKernelId[] = [
+  "integerBranchHash",
+  "floatingPoint",
+  "matrix",
+  "memoryStencil",
+];
 const CPU_SUSTAINED_MIX: CpuKernelId[] = [
   "integerBranchHash",
   "floatingPoint",
@@ -292,6 +309,39 @@ function formatCount(value: number) {
   return Math.max(0, Math.round(value)).toLocaleString();
 }
 
+function clamp(value: number, minimum: number, maximum: number) {
+  return Math.min(maximum, Math.max(minimum, value));
+}
+
+function blendProjectionScores(
+  baselineScore: number,
+  observedScore: number,
+  trust: number,
+) {
+  const normalizedTrust = clamp(trust, 0, 1);
+
+  return Math.round(
+    baselineScore ** (1 - normalizedTrust) *
+      observedScore ** normalizedTrust,
+  );
+}
+
+function stabilizeCalibratedProjection(
+  calibrationScore: number,
+  observedScore: number | null,
+  trust: number,
+  minimumRatio = 0.84,
+) {
+  if (observedScore === null) {
+    return calibrationScore;
+  }
+
+  return Math.max(
+    Math.round(calibrationScore * minimumRatio),
+    blendProjectionScores(calibrationScore, observedScore, trust),
+  );
+}
+
 function estimateCpuAggregateScore(
   id: "singleCore" | "multiCore",
   label: string,
@@ -336,6 +386,72 @@ function estimateCpuAggregateScore(
   }).score;
 }
 
+function estimateCpuAggregateProjectionRatio(
+  metrics: Partial<Record<CpuKernelId, CpuKernelMetric>>,
+  referenceThroughputs: Record<CpuKernelId, number>,
+) {
+  const measuredKernels = CPU_KERNEL_ORDER.filter((kernel) => Boolean(metrics[kernel]));
+
+  if (measuredKernels.length === 0) {
+    return null;
+  }
+
+  const fallbackRatio = weightedGeometricMean(
+    measuredKernels.map((kernel) => ({
+      ratio: metrics[kernel]!.throughput / referenceThroughputs[kernel],
+      weight: CPU_KERNEL_WEIGHTS[kernel],
+    })),
+  );
+
+  return weightedGeometricMean(
+    CPU_KERNEL_ORDER.map((kernel) => ({
+      ratio: metrics[kernel]
+        ? metrics[kernel]!.throughput / referenceThroughputs[kernel]
+        : fallbackRatio,
+      weight: CPU_KERNEL_WEIGHTS[kernel],
+    })),
+  );
+}
+
+function getCpuKernelCoverage(
+  metrics: Partial<Record<CpuKernelId, CpuKernelMetric>>,
+) {
+  return (
+    CPU_KERNEL_ORDER.filter((kernel) => Boolean(metrics[kernel])).length /
+    CPU_KERNEL_ORDER.length
+  );
+}
+
+function getCpuSustainedCoverage(
+  metric: CpuKernelMetric | null,
+  targetDurationMs: number,
+) {
+  if (!metric || targetDurationMs <= 0) {
+    return 0;
+  }
+
+  return Math.min(1, Math.max(0, metric.durationMs / targetDurationMs));
+}
+
+function getCpuProjectionProbeScore(
+  metrics: Partial<Record<CpuKernelId, CpuKernelMetric>>,
+  referenceThroughputs: Record<CpuKernelId, number>,
+) {
+  const measuredProbeCount = CPU_PROJECTION_PROBE_KERNELS.filter(
+    (kernel) => Boolean(metrics[kernel]),
+  ).length;
+
+  if (measuredProbeCount < CPU_PROJECTION_PROBE_KERNELS.length) {
+    return null;
+  }
+
+  const ratio = estimateCpuAggregateProjectionRatio(metrics, referenceThroughputs);
+
+  return ratio === null
+    ? null
+    : scoreFromRatio(ratio, CPU_SCORE_CURVES.multiCore);
+}
+
 function estimateCpuSustainedScore(
   metric: CpuKernelMetric | null,
   referenceThroughput: number,
@@ -358,6 +474,17 @@ function estimateCpuSustainedScore(
       },
     ],
   }).score;
+}
+
+function estimateCpuSustainedProjectionRatio(
+  metric: CpuKernelMetric | null,
+  referenceThroughput: number,
+) {
+  if (!metric) {
+    return null;
+  }
+
+  return metric.throughput / referenceThroughput;
 }
 
 function buildCpuLiveScores({
@@ -514,6 +641,7 @@ export async function runCpuBenchmark({
   let singleCoreMetrics: Record<CpuKernelId, CpuKernelMetric> | null = null;
   let multiCoreMetrics: Record<CpuKernelId, CpuKernelMetric> | null = null;
   let sustainedMetric: CpuKernelMetric | null = null;
+  const projectionProbeMetrics: Partial<Record<CpuKernelId, CpuKernelMetric>> = {};
   const startedAtPerf = performance.now();
   let activeStage: "warmup" | "singleCore" | "multiCore" | "sustained" | "persisting" =
     "warmup";
@@ -574,27 +702,31 @@ export async function runCpuBenchmark({
                 ? "Round-robin mixed burn across the current worker pool."
                 : `${snapshots.length} workers streaming telemetry for ${CPU_SUITE_LABELS[activeKernel as CpuKernelId].toLowerCase()}.`,
           };
-    const liveSingleCoreScore = estimateCpuAggregateScore(
-      "singleCore",
-      "Single-core",
+    const projectedSingleCoreMetrics =
       activeStage === "singleCore" && activeMetric
         ? {
           ...(singleCoreMetrics ?? {}),
           [activeKernel as CpuKernelId]: activeMetric,
         }
-        : singleCoreMetrics ?? {},
+        : singleCoreMetrics ?? {};
+    const projectedMultiCoreMetrics =
+      activeStage === "multiCore" && activeMetric
+        ? {
+          ...(multiCoreMetrics ?? {}),
+          [activeKernel as CpuKernelId]: activeMetric,
+        }
+        : multiCoreMetrics ?? {};
+    const liveSingleCoreScore = estimateCpuAggregateScore(
+      "singleCore",
+      "Single-core",
+      projectedSingleCoreMetrics,
       config.referenceThroughputs.singleCore,
       1,
     );
     const liveMultiCoreScore = estimateCpuAggregateScore(
       "multiCore",
       "Multi-core",
-      activeStage === "multiCore" && activeMetric
-        ? {
-          ...(multiCoreMetrics ?? {}),
-          [activeKernel as CpuKernelId]: activeMetric,
-        }
-        : multiCoreMetrics ?? {},
+      projectedMultiCoreMetrics,
       config.referenceThroughputs.multiCore,
       workerCount,
     );
@@ -602,6 +734,80 @@ export async function runCpuBenchmark({
       activeStage === "sustained" && activeMetric ? activeMetric : sustainedMetric,
       config.referenceThroughputs.sustained,
     );
+    const projectedSingleCoreRatio = estimateCpuAggregateProjectionRatio(
+      projectedSingleCoreMetrics,
+      config.referenceThroughputs.singleCore,
+    );
+    const projectedMultiCoreRatio = estimateCpuAggregateProjectionRatio(
+      projectedMultiCoreMetrics,
+      config.referenceThroughputs.multiCore,
+    );
+    const projectedSustainedRatio = estimateCpuSustainedProjectionRatio(
+      activeStage === "sustained" && activeMetric ? activeMetric : sustainedMetric,
+      config.referenceThroughputs.sustained,
+    );
+    const projectedScore = calculateCpuProjectedHeadlineScore({
+      runMode,
+      singleCoreRatio: projectedSingleCoreRatio,
+      multiCoreRatio: projectedMultiCoreRatio,
+      sustainedRatio: projectedSustainedRatio,
+      multiCoreCoverage: getCpuKernelCoverage(projectedMultiCoreMetrics),
+      sustainedCoverage: getCpuSustainedCoverage(
+        activeStage === "sustained" && activeMetric ? activeMetric : sustainedMetric,
+        config.sustainedDurationMs,
+      ),
+    });
+    const calibrationMultiCoreScore = getCpuProjectionProbeScore(
+      projectionProbeMetrics,
+      config.referenceThroughputs.multiCore,
+    );
+    const projectedLiveMultiCoreScore =
+      projectedMultiCoreRatio === null
+        ? null
+        : scoreFromRatio(projectedMultiCoreRatio, CPU_SCORE_CURVES.multiCore);
+    const stabilizedProjectedScore =
+      runMode === "singleCore"
+        ? projectedScore
+        : runMode === "multiCore"
+          ? calibrationMultiCoreScore === null
+            ? projectedLiveMultiCoreScore
+            : activeStage === "warmup"
+              ? calibrationMultiCoreScore
+              : projectedLiveMultiCoreScore === null
+                ? calibrationMultiCoreScore
+                : stabilizeCalibratedProjection(
+                  calibrationMultiCoreScore,
+                  projectedLiveMultiCoreScore,
+                  Math.pow(getCpuKernelCoverage(projectedMultiCoreMetrics), 2) * 0.55,
+                )
+          : calibrationMultiCoreScore === null
+            ? projectedScore
+            : activeStage === "warmup" || activeStage === "singleCore"
+              ? calibrationMultiCoreScore
+              : activeStage === "multiCore"
+                ? projectedLiveMultiCoreScore === null
+                  ? calibrationMultiCoreScore
+                  : stabilizeCalibratedProjection(
+                    calibrationMultiCoreScore,
+                    projectedLiveMultiCoreScore,
+                    Math.pow(getCpuKernelCoverage(projectedMultiCoreMetrics), 2) * 0.55,
+                  )
+                : projectedScore === null
+                  ? calibrationMultiCoreScore
+                  : blendProjectionScores(
+                    calibrationMultiCoreScore,
+                    projectedScore,
+                    activeStage === "persisting"
+                      ? 1
+                      : 0.18 +
+                        getCpuSustainedCoverage(
+                          activeStage === "sustained" && activeMetric
+                            ? activeMetric
+                            : sustainedMetric,
+                          config.sustainedDurationMs,
+                        ) *
+                          0.82,
+                  );
     const metrics: BenchmarkTelemetryMetric[] = [
       {
         label: "Active kernel",
@@ -650,6 +856,9 @@ export async function runCpuBenchmark({
         }),
         metrics,
         activity: buildCpuActivityEntries(snapshots),
+        projection: {
+          projectedScore: stabilizedProjectedScore,
+        },
       },
     });
   };
@@ -685,6 +894,48 @@ export async function runCpuBenchmark({
   };
 
   try {
+    if (runMode !== "singleCore") {
+      const projectionProbeDurationMs =
+        resolvedPreset === "smoke" ? 120 : 160;
+
+      for (const kernel of CPU_PROJECTION_PROBE_KERNELS) {
+        setActiveCpuStage({
+          stage: "warmup",
+          label: "Warmup",
+          message:
+            "Sampling representative multi-core kernels to seed the projected score range.",
+          step: 1,
+          progress: 5,
+          kernel,
+        });
+
+        const stageStartedAt = performance.now();
+        const responses = await Promise.all(
+          workerPool.map((worker, workerIndex) =>
+            worker.runTask({
+              type: "run-kernel",
+              kernel,
+              durationMs: projectionProbeDurationMs,
+              workerIndex,
+              seed: 300 + workerIndex * 19 + CPU_PROJECTION_PROBE_KERNELS.indexOf(kernel),
+              sizes: config.dataScale,
+              wasmModule: undefined,
+              cancelBuffer: cancelSignal.buffer,
+            }),
+          ),
+        );
+
+        visibilityGuard.assertVisible();
+        projectionProbeMetrics[kernel] = summarizeConcurrentKernel(
+          kernel,
+          responses,
+          performance.now() - stageStartedAt,
+          workerCount,
+        );
+        emitLiveCpuTelemetry();
+      }
+    }
+
     setActiveCpuStage({
       stage: "warmup",
       label: "Warmup",
@@ -961,6 +1212,9 @@ export async function runCpuBenchmark({
           },
         ],
         activity: [],
+        projection: {
+          projectedScore: cpuScore,
+        },
       },
     });
 

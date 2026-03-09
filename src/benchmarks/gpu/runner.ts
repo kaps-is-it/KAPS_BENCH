@@ -8,6 +8,10 @@ import {
   calculateGpuAggregateSubScore,
   calculateGpuScore,
 } from "@/benchmarks/gpu/scoring";
+import {
+  applyGpuCalibrationCompensation,
+  calculateGpuProjectedOverallScore,
+} from "@/benchmarks/shared/live-estimation";
 import type {
   BenchmarkActivityEntry,
   BenchmarkLiveScore,
@@ -66,6 +70,8 @@ type GpuHarness = {
 
 const GRAPHICS_ORDER = Object.keys(GPU_GRAPHICS_LABELS) as GpuGraphicsKernelId[];
 const COMPUTE_ORDER = Object.keys(GPU_COMPUTE_LABELS) as GpuComputeKernelId[];
+const GPU_PROJECTION_PROBE_GRAPHICS = GRAPHICS_ORDER;
+const GPU_PROJECTION_PROBE_COMPUTE = COMPUTE_ORDER;
 
 export function supportsCommandEncoderTimestamps(
   encoder: GPUCommandEncoder,
@@ -963,6 +969,38 @@ function formatThroughput(value: number) {
   return `${roundMetric(absolute)} units/s`;
 }
 
+function clamp(value: number, minimum: number, maximum: number) {
+  return Math.min(maximum, Math.max(minimum, value));
+}
+
+function blendProjectionScores(
+  baselineScore: number,
+  observedScore: number,
+  trust: number,
+) {
+  const normalizedTrust = clamp(trust, 0, 1);
+
+  return Math.round(
+    baselineScore + (observedScore - baselineScore) * normalizedTrust,
+  );
+}
+
+function stabilizeCalibratedProjection(
+  calibrationScore: number,
+  observedScore: number | null,
+  trust: number,
+  minimumRatio = 0.82,
+) {
+  if (observedScore === null) {
+    return calibrationScore;
+  }
+
+  return Math.max(
+    Math.round(calibrationScore * minimumRatio),
+    blendProjectionScores(calibrationScore, observedScore, trust),
+  );
+}
+
 function estimateGpuAggregateScore<TKernelId extends GpuGraphicsKernelId | GpuComputeKernelId>(
   id: GpuAggregateScoreId,
   label: string,
@@ -993,6 +1031,168 @@ function estimateGpuAggregateScore<TKernelId extends GpuGraphicsKernelId | GpuCo
     label,
     kernels,
   }).score;
+}
+
+function getGpuKernelCoverage<TKernelId extends GpuGraphicsKernelId | GpuComputeKernelId>(
+  metrics: Partial<Record<TKernelId, GpuKernelMetric>>,
+  referenceThroughputs: Record<TKernelId, number>,
+) {
+  const kernels = Object.keys(referenceThroughputs) as TKernelId[];
+
+  return kernels.filter((kernel) => Boolean(metrics[kernel])).length / kernels.length;
+}
+
+function getGpuProjectionProbeScore({
+  graphicsMetrics,
+  computeMetrics,
+  config,
+}: {
+  graphicsMetrics: Partial<Record<GpuGraphicsKernelId, GpuKernelMetric>>;
+  computeMetrics: Partial<Record<GpuComputeKernelId, GpuKernelMetric>>;
+  config: ReturnType<typeof getGpuPreset>;
+}) {
+  const graphicsCoverage = getGpuKernelCoverage(
+    graphicsMetrics,
+    config.referenceThroughputs.graphics,
+  );
+  const computeCoverage = getGpuKernelCoverage(
+    computeMetrics,
+    config.referenceThroughputs.compute,
+  );
+
+  if (graphicsCoverage < 1 || computeCoverage < 1) {
+    return null;
+  }
+
+  const graphicsScore = estimateGpuAggregateScore(
+    "graphics",
+    "Graphics",
+    graphicsMetrics,
+    config.referenceThroughputs.graphics,
+  );
+  const computeScore = estimateGpuAggregateScore(
+    "compute",
+    "Compute",
+    computeMetrics,
+    config.referenceThroughputs.compute,
+  );
+
+  const projectedScore = calculateGpuProjectedOverallScore({
+    graphicsScore,
+    computeScore,
+  });
+
+  return projectedScore === null
+    ? null
+    : applyGpuCalibrationCompensation(projectedScore, config.name);
+}
+
+function createGraphicsBatchBuilder(
+  harness: GpuHarness,
+  config: ReturnType<typeof getGpuPreset>,
+  kernel: GpuGraphicsKernelId,
+) {
+  return (iteration: number) => {
+    switch (kernel) {
+      case "rasterScene":
+        return buildInstancedBatch(harness, {
+          time: iteration * 0.013,
+          amplitude: 0.55,
+          scale: 0.55,
+          loops: 6,
+          passes: 30,
+          instanceCount: config.renderBatch.rasterInstances,
+          clearColor: { r: 0.03, g: 0.04, b: 0.06, a: 1 },
+        });
+      case "shadingScene":
+        return buildFullscreenBatch(harness, {
+          time: iteration * 0.019,
+          amplitude: 0.7,
+          scale: 0.02,
+          loops: config.renderBatch.shadingLoops,
+          passes: 40,
+          clearColor: { r: 0.02, g: 0.02, b: 0.03, a: 1 },
+        });
+      case "instancingScene":
+        return buildInstancedBatch(harness, {
+          time: iteration * 0.017,
+          amplitude: 0.95,
+          scale: 0.75,
+          loops: 10,
+          passes: 30,
+          instanceCount: config.renderBatch.instancingInstances,
+          clearColor: { r: 0.02, g: 0.03, b: 0.04, a: 1 },
+        });
+      case "particleScene":
+        return (encoder: GPUCommandEncoder) => {
+          const computeStats = buildSimulationBatch(
+            harness,
+            config.computeBatch.simulationParticles,
+            iteration,
+            30,
+          )(encoder);
+          const renderStats = buildInstancedBatch(harness, {
+            time: iteration * 0.021,
+            amplitude: 1.2,
+            scale: 0.35,
+            loops: 8,
+            passes: 20,
+            instanceCount: config.renderBatch.particleInstances,
+            clearColor: { r: 0.015, g: 0.02, b: 0.03, a: 1 },
+          })(encoder);
+
+          return {
+            workUnits: computeStats.workUnits + renderStats.workUnits,
+            checksum: computeStats.checksum ^ renderStats.checksum,
+          };
+        };
+      case "postProcessScene":
+        return buildFullscreenBatch(harness, {
+          time: iteration * 0.025,
+          amplitude: 0.8,
+          scale: 0.012,
+          loops: config.renderBatch.postProcessLoops,
+          passes: 40,
+          clearColor: { r: 0.01, g: 0.015, b: 0.02, a: 1 },
+        });
+      default:
+        throw new Error(`Unsupported graphics kernel: ${kernel}`);
+    }
+  };
+}
+
+function createComputeBatchBuilder(
+  harness: GpuHarness,
+  config: ReturnType<typeof getGpuPreset>,
+  kernel: GpuComputeKernelId,
+) {
+  return (iteration: number) => {
+    switch (kernel) {
+      case "matrixCompute":
+        return buildMatrixBatch(
+          harness,
+          config.computeBatch.matrixSize,
+          iteration,
+          40,
+        );
+      case "convolutionCompute":
+        return buildConvolutionBatch(
+          harness,
+          config.computeBatch.convolutionSize,
+          iteration,
+          30,
+        );
+      case "simulationCompute":
+        return buildSimulationBatch(
+          harness,
+          config.computeBatch.simulationParticles,
+          iteration,
+          50,
+        );
+      default:
+        throw new Error(`Unsupported compute kernel: ${kernel}`);
+    }
+  };
 }
 
 function buildGpuLiveScores({
@@ -1458,6 +1658,10 @@ export async function runGpuBenchmark({
   const totalSteps = 1 + GRAPHICS_ORDER.length + COMPUTE_ORDER.length + 1;
   const graphicsMetrics = {} as Record<GpuGraphicsKernelId, GpuKernelMetric>;
   const computeMetrics = {} as Record<GpuComputeKernelId, GpuKernelMetric>;
+  const projectionGraphicsProbeMetrics =
+    {} as Partial<Record<GpuGraphicsKernelId, GpuKernelMetric>>;
+  const projectionComputeProbeMetrics =
+    {} as Partial<Record<GpuComputeKernelId, GpuKernelMetric>>;
   let sustainedMetric: GpuKernelMetric | null = null;
   const overallStart = performance.now();
   let activeStage: "warmup" | "graphics" | "compute" | "sustained" | "persisting" =
@@ -1545,6 +1749,61 @@ export async function runGpuBenchmark({
             ],
           }).score
           : null;
+    const projectedScore = calculateGpuProjectedOverallScore({
+      graphicsScore: liveGraphicsScore,
+      computeScore: liveComputeScore,
+    });
+    const calibrationProjectedScore = getGpuProjectionProbeScore({
+      graphicsMetrics: projectionGraphicsProbeMetrics,
+      computeMetrics: projectionComputeProbeMetrics,
+      config,
+    });
+    const combinedCoverage = clamp(
+      (
+        getGpuKernelCoverage(
+          activeStage === "graphics" && activeMetric
+            ? {
+              ...graphicsMetrics,
+              [activeKernel as GpuGraphicsKernelId]: activeMetric,
+            }
+            : graphicsMetrics,
+          config.referenceThroughputs.graphics,
+        ) * 0.45 +
+        getGpuKernelCoverage(
+          activeStage === "compute" && activeMetric
+            ? {
+              ...computeMetrics,
+              [activeKernel as GpuComputeKernelId]: activeMetric,
+            }
+            : computeMetrics,
+          config.referenceThroughputs.compute,
+        ) * 0.4
+      ) / 0.85,
+      0,
+      1,
+    );
+    const stabilizedProjectedScore =
+      calibrationProjectedScore === null
+        ? projectedScore
+        : activeStage === "warmup"
+          ? calibrationProjectedScore
+          : activeStage === "graphics" || activeStage === "compute"
+            ? stabilizeCalibratedProjection(
+              calibrationProjectedScore,
+              projectedScore,
+              0.24 + Math.pow(combinedCoverage, 1.18) * 0.68,
+              0.95,
+            )
+            : projectedScore === null
+              ? calibrationProjectedScore
+              : activeStage === "persisting"
+                ? projectedScore
+                : stabilizeCalibratedProjection(
+                  calibrationProjectedScore,
+                  projectedScore,
+                  0.88,
+                  0.97,
+                );
     const throughputRatio =
       activeStage === "graphics" && activeMetric && activeKernel
         ? activeMetric.throughput /
@@ -1605,6 +1864,9 @@ export async function runGpuBenchmark({
           throughputRatio,
           config,
         }),
+        projection: {
+          projectedScore: stabilizedProjectedScore,
+        },
       },
     });
   };
@@ -1635,6 +1897,67 @@ export async function runGpuBenchmark({
   };
 
   try {
+    const projectionGraphicsProbeDurationMs =
+      resolvedPreset === "smoke" ? 55 : 90;
+    const projectionComputeProbeDurationMs =
+      resolvedPreset === "smoke" ? 65 : 110;
+
+    for (const kernel of GPU_PROJECTION_PROBE_GRAPHICS) {
+      setActiveGpuStage({
+        stage: "warmup",
+        label: "GPU warmup",
+        message:
+          "Running a short graphics + compute calibration pass to seed the projected overall score.",
+        step: 1,
+        progress: 5,
+        kernel,
+      });
+
+      const result = await runFixedTimeStage({
+        harness,
+        durationMs: projectionGraphicsProbeDurationMs,
+        visibilityGuard,
+        buildBatch: createGraphicsBatchBuilder(harness, config, kernel),
+      });
+
+      visibilityGuard.assertVisible();
+      projectionGraphicsProbeMetrics[kernel] = createGpuKernelMetric(
+        kernel,
+        GPU_GRAPHICS_LABELS[kernel],
+        result,
+        `Short graphics calibration for ${GPU_GRAPHICS_LABELS[kernel].toLowerCase()}.`,
+      );
+      emitGpuTelemetry();
+    }
+
+    for (const kernel of GPU_PROJECTION_PROBE_COMPUTE) {
+      setActiveGpuStage({
+        stage: "warmup",
+        label: "GPU warmup",
+        message:
+          "Running a short graphics + compute calibration pass to seed the projected overall score.",
+        step: 1,
+        progress: 5,
+        kernel,
+      });
+
+      const result = await runFixedTimeStage({
+        harness,
+        durationMs: projectionComputeProbeDurationMs,
+        visibilityGuard,
+        buildBatch: createComputeBatchBuilder(harness, config, kernel),
+      });
+
+      visibilityGuard.assertVisible();
+      projectionComputeProbeMetrics[kernel] = createGpuKernelMetric(
+        kernel,
+        GPU_COMPUTE_LABELS[kernel],
+        result,
+        `Short compute calibration for ${GPU_COMPUTE_LABELS[kernel].toLowerCase()}.`,
+      );
+      emitGpuTelemetry();
+    }
+
     setActiveGpuStage({
       stage: "warmup",
       label: "GPU warmup",
@@ -1685,73 +2008,8 @@ export async function runGpuBenchmark({
           liveSnapshot = snapshot;
           emitGpuTelemetry();
         },
-        buildBatch: (iteration) => {
-          switch (kernel) {
-            case "rasterScene":
-              return buildInstancedBatch(harness, {
-                time: iteration * 0.013,
-                amplitude: 0.55,
-                scale: 0.55,
-                loops: 6,
-                passes: 30,
-                instanceCount: config.renderBatch.rasterInstances,
-                clearColor: { r: 0.03, g: 0.04, b: 0.06, a: 1 },
-              });
-            case "shadingScene":
-              return buildFullscreenBatch(harness, {
-                time: iteration * 0.019,
-                amplitude: 0.7,
-                scale: 0.02,
-                loops: config.renderBatch.shadingLoops,
-                passes: 40,
-                clearColor: { r: 0.02, g: 0.02, b: 0.03, a: 1 },
-              });
-            case "instancingScene":
-              return buildInstancedBatch(harness, {
-                time: iteration * 0.017,
-                amplitude: 0.95,
-                scale: 0.75,
-                loops: 10,
-                passes: 30,
-                instanceCount: config.renderBatch.instancingInstances,
-                clearColor: { r: 0.02, g: 0.03, b: 0.04, a: 1 },
-              });
-            case "particleScene":
-              return (encoder) => {
-                const computeStats = buildSimulationBatch(
-                  harness,
-                  config.computeBatch.simulationParticles,
-                  iteration,
-                  30,
-                )(encoder);
-                const renderStats = buildInstancedBatch(harness, {
-                  time: iteration * 0.021,
-                  amplitude: 1.2,
-                  scale: 0.35,
-                  loops: 8,
-                  passes: 20,
-                  instanceCount: config.renderBatch.particleInstances,
-                  clearColor: { r: 0.015, g: 0.02, b: 0.03, a: 1 },
-                })(encoder);
-
-                return {
-                  workUnits: computeStats.workUnits + renderStats.workUnits,
-                  checksum: computeStats.checksum ^ renderStats.checksum,
-                };
-              };
-            case "postProcessScene":
-              return buildFullscreenBatch(harness, {
-                time: iteration * 0.025,
-                amplitude: 0.8,
-                scale: 0.012,
-                loops: config.renderBatch.postProcessLoops,
-                passes: 40,
-                clearColor: { r: 0.01, g: 0.015, b: 0.02, a: 1 },
-              });
-            default:
-              throw new Error(`Unsupported graphics kernel: ${kernel}`);
-          }
-        },
+        buildBatch: (iteration) =>
+          createGraphicsBatchBuilder(harness, config, kernel)(iteration),
       });
 
       visibilityGuard.assertVisible();
@@ -1784,33 +2042,8 @@ export async function runGpuBenchmark({
           liveSnapshot = snapshot;
           emitGpuTelemetry();
         },
-        buildBatch: (iteration) => {
-          switch (kernel) {
-            case "matrixCompute":
-              return buildMatrixBatch(
-                harness,
-                config.computeBatch.matrixSize,
-                iteration,
-                40,
-              );
-            case "convolutionCompute":
-              return buildConvolutionBatch(
-                harness,
-                config.computeBatch.convolutionSize,
-                iteration,
-                30,
-              );
-            case "simulationCompute":
-              return buildSimulationBatch(
-                harness,
-                config.computeBatch.simulationParticles,
-                iteration,
-                50,
-              );
-            default:
-              throw new Error(`Unsupported compute kernel: ${kernel}`);
-          }
-        },
+        buildBatch: (iteration) =>
+          createComputeBatchBuilder(harness, config, kernel)(iteration),
       });
 
       visibilityGuard.assertVisible();

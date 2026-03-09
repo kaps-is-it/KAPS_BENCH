@@ -24,6 +24,9 @@ export type BenchmarkTelemetry = {
   liveScores: BenchmarkLiveScore[];
   metrics: BenchmarkTelemetryMetric[];
   activity: BenchmarkActivityEntry[];
+  projection?: {
+    projectedScore: number | null;
+  };
 };
 
 export type BenchmarkProgressUpdate = {
