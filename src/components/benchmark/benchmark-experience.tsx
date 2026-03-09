@@ -38,6 +38,7 @@ import type {
 } from "@/benchmarks/shared/progress";
 import { getBenchmarkSupportState } from "@/lib/browser";
 import { formatApproxMemory } from "@/lib/format-memory";
+import { listGpuAdapterOptions } from "@/lib/hardware-detect/gpu-detect";
 import { detectDeviceProfile } from "@/lib/hardware-detect";
 import type {
   ActiveBenchmarkResult,
@@ -47,6 +48,8 @@ import type {
   BenchmarkRunState,
   CapabilityFlags,
   CpuRunMode,
+  GpuAdapterPreference,
+  GpuAdapterSelectionOption,
 } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { useBenchmarkStore } from "@/stores/benchmark-store";
@@ -278,6 +281,27 @@ function averageAvailableScores(
   }
 
   return Math.round(values.reduce((sum, value) => sum + value, 0) / values.length);
+}
+
+function getDefaultGpuAdapterPreference(
+  options: GpuAdapterSelectionOption[],
+): GpuAdapterPreference {
+  return (
+    options.find((option) => option.preference === "high-performance")?.preference ??
+    options[0]?.preference ??
+    "high-performance"
+  );
+}
+
+function getGpuAdapterPreferenceLabel(preference: GpuAdapterPreference) {
+  switch (preference) {
+    case "high-performance":
+      return "High performance";
+    case "low-power":
+      return "Low power";
+    default:
+      return "Automatic";
+  }
 }
 
 function getLiveScoreStatusTone(status: BenchmarkLiveScore["status"]) {
@@ -700,6 +724,9 @@ export function BenchmarkExperience({
   const [supportMessage, setSupportMessage] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [selectedCpuRunMode, setSelectedCpuRunMode] = useState<CpuRunMode>("full");
+  const [gpuAdapterOptions, setGpuAdapterOptions] = useState<GpuAdapterSelectionOption[]>([]);
+  const [selectedGpuAdapterPreference, setSelectedGpuAdapterPreference] =
+    useState<GpuAdapterPreference>("high-performance");
   const [submissionWarning, setSubmissionWarning] = useState<string | null>(null);
   const [liveTelemetry, setLiveTelemetry] = useState<BenchmarkTelemetry | null>(null);
   const [liveProjection, setLiveProjection] =
@@ -746,6 +773,8 @@ export function BenchmarkExperience({
     resetLiveSurface();
     setSupportMessage(null);
     setOpenProjectionInfoKey(null);
+    setGpuAdapterOptions([]);
+    setSelectedGpuAdapterPreference("high-performance");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [benchmarkKind]);
 
@@ -833,6 +862,12 @@ export function BenchmarkExperience({
   const gpuOverallPreviewScore =
     benchmarkKind === "gpu" && result?.benchmarkKind === "gpu"
       ? averageAvailableScores(result.graphicsScore, result.computeScore)
+      : null;
+  const selectedGpuAdapterOption =
+    benchmarkKind === "gpu"
+      ? gpuAdapterOptions.find(
+        (option) => option.preference === selectedGpuAdapterPreference,
+      ) ?? gpuAdapterOptions[0] ?? null
       : null;
   const projectedClass =
     lockedProjection?.projectedClass ?? liveProjection?.projectedClass ?? null;
@@ -973,10 +1008,23 @@ export function BenchmarkExperience({
       setRunState("detecting");
       setProgress(8, "Device detection", "Collecting browser hardware signals.");
 
-      const profile = await detectDeviceProfile();
+      const [profile, adapterOptions] = await Promise.all([
+        detectDeviceProfile(),
+        benchmarkKind === "gpu"
+          ? listGpuAdapterOptions()
+          : Promise.resolve([] as GpuAdapterSelectionOption[]),
+      ]);
       const supportState = getSupport(profile.capabilities);
 
       setDeviceProfile(profile);
+      setGpuAdapterOptions(adapterOptions);
+      setSelectedGpuAdapterPreference((previous) => {
+        if (adapterOptions.some((option) => option.preference === previous)) {
+          return previous;
+        }
+
+        return getDefaultGpuAdapterPreference(adapterOptions);
+      });
       setProgress(
         18,
         "Device ready",
@@ -1041,6 +1089,7 @@ export function BenchmarkExperience({
           : await runGpuBenchmark({
             preset,
             mock: isMockRun,
+            adapterPreference: selectedGpuAdapterPreference,
             abortSignal: abortController.signal,
             onProgress: (update) => {
               handleProgressUpdate(update);
@@ -1194,6 +1243,72 @@ export function BenchmarkExperience({
                       Multi-Core Benchmark
                     </Button>
                   </div>
+                ) : benchmarkKind === "gpu" ? (
+                  <div className="w-full max-w-xl rounded-[1.6rem] border border-slate-200 bg-slate-50/80 p-4 shadow-sm sm:p-5">
+                    <div className="flex items-start gap-3">
+                      <div className="flex size-10 shrink-0 items-center justify-center rounded-2xl bg-primary/10 text-primary">
+                        <Monitor className="size-4.5" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="text-[0.7rem] font-semibold uppercase tracking-[0.22em] text-slate-500">
+                          GPU target
+                        </p>
+                        <p className="mt-2 text-sm leading-6 text-slate-500">
+                          {gpuAdapterOptions.length > 1
+                            ? "Choose which browser-exposed WebGPU adapter target to benchmark."
+                            : "The browser chooses the adapter target. If it exposes multiple GPU targets, you can select them here."}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="mt-4">
+                      <select
+                        value={selectedGpuAdapterPreference}
+                        disabled={runState === "running" || isSubmitting}
+                        onChange={(event) => {
+                          setSelectedGpuAdapterPreference(
+                            event.target.value as GpuAdapterPreference,
+                          );
+                        }}
+                        className="h-14 w-full rounded-[1.15rem] border border-slate-200 bg-white px-4 text-base font-semibold text-slate-900 shadow-sm outline-none transition focus:border-primary/35 focus:ring-4 focus:ring-primary/10 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
+                      >
+                        {(gpuAdapterOptions.length > 0
+                          ? gpuAdapterOptions
+                          : [
+                            {
+                              preference: "high-performance" as const,
+                              label: "High-performance target",
+                              adapterName: "High-performance target",
+                              description:
+                                "Ask the browser for a high-performance WebGPU adapter.",
+                            },
+                            {
+                              preference: "low-power" as const,
+                              label: "Low-power target",
+                              adapterName: "Low-power target",
+                              description:
+                                "Ask the browser for a low-power WebGPU adapter.",
+                            },
+                            {
+                              preference: "auto" as const,
+                              label: "Automatic target",
+                              adapterName: "Automatic target",
+                              description:
+                                "Let the browser choose the default WebGPU adapter.",
+                            },
+                          ]).map((option) => (
+                          <option key={option.preference} value={option.preference}>
+                            {`${getGpuAdapterPreferenceLabel(option.preference)} • ${option.adapterName}`}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <p className="mt-3 text-sm leading-6 text-slate-600">
+                      {selectedGpuAdapterOption?.description ??
+                        "WebGPU does not provide a full hardware picker, so this is a best-effort adapter target selection."}
+                    </p>
+                  </div>
                 ) : null}
               </div>
 
@@ -1212,6 +1327,14 @@ export function BenchmarkExperience({
                         : "Multi-core only"
                     : "Public runs use the full suite"}
                 </div>
+                {benchmarkKind === "gpu" && selectedGpuAdapterOption ? (
+                  <div className="metric-chip border-primary/15 bg-primary/8 text-primary">
+                    <Monitor className="size-3.5" />
+                    {`${getGpuAdapterPreferenceLabel(
+                      selectedGpuAdapterOption.preference,
+                    )} GPU: ${selectedGpuAdapterOption.adapterName}`}
+                  </div>
+                ) : null}
                 {preset === "smoke" ? (
                   <div className="metric-chip border-amber-200 bg-amber-50 text-amber-700">
                     Smoke preset enabled
@@ -1636,6 +1759,25 @@ export function BenchmarkExperience({
                     }
                   }
 
+                  const gpuSnapshotName =
+                    benchmarkKind === "gpu" && selectedGpuAdapterOption
+                      ? selectedGpuAdapterOption.adapterName
+                      : deviceProfile.webgpuInfo?.device ??
+                        deviceProfile.webgpuInfo?.description ??
+                        parsedGpu.main;
+                  const gpuSnapshotDetail =
+                    benchmarkKind === "gpu" && selectedGpuAdapterOption
+                      ? selectedGpuAdapterOption.description
+                      : parsedGpu.sub;
+                  const gpuSnapshotEyebrow =
+                    benchmarkKind === "gpu" && selectedGpuAdapterOption
+                      ? "Benchmark target adapter"
+                      : "Primary graphics adapter";
+                  const gpuSnapshotCaption =
+                    benchmarkKind === "gpu" && selectedGpuAdapterOption
+                      ? "Selected WebGPU adapter target"
+                      : "Browser-detected renderer profile";
+
                   const capabilityItems = [
                     {
                       label: "WebAssembly",
@@ -1687,21 +1829,21 @@ export function BenchmarkExperience({
                                 </div>
                                 <div>
                                   <p className="text-[0.68rem] font-semibold uppercase tracking-[0.24em] text-blue-100/90">
-                                    Primary graphics adapter
+                                    {gpuSnapshotEyebrow}
                                   </p>
                                   <p className="mt-1 text-sm text-blue-100/75">
-                                    Browser-detected renderer profile
+                                    {gpuSnapshotCaption}
                                   </p>
                                 </div>
                               </div>
 
                               <div className="mt-8">
                                 <p className="max-w-xl text-4xl font-semibold leading-[0.94] tracking-[-0.07em] text-white sm:text-5xl">
-                                  {parsedGpu.main}
+                                  {gpuSnapshotName}
                                 </p>
-                                {parsedGpu.sub ? (
+                                {gpuSnapshotDetail ? (
                                   <p className="mt-4 max-w-[28rem] text-base leading-7 text-blue-50/82">
-                                    {parsedGpu.sub}
+                                    {gpuSnapshotDetail}
                                   </p>
                                 ) : (
                                   <p className="mt-4 max-w-[28rem] text-base leading-7 text-blue-50/82">

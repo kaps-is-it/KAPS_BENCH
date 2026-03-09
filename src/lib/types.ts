@@ -58,6 +58,16 @@ export interface WebGpuAdapterSummary {
   description?: string;
 }
 
+export type GpuAdapterPreference = "auto" | "high-performance" | "low-power";
+
+export interface GpuAdapterSelectionOption {
+  preference: GpuAdapterPreference;
+  label: string;
+  adapterName: string;
+  description: string;
+  adapterInfo?: WebGpuAdapterSummary;
+}
+
 export interface DeviceProfile {
   gpuRenderer: string;
   gpuVendor: string;

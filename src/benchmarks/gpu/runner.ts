@@ -23,6 +23,7 @@ import { combineChecksums, roundMetric } from "@/benchmarks/shared/scoring";
 import type {
   BenchmarkPreset,
   GpuAggregateScoreId,
+  GpuAdapterPreference,
   GpuBenchmarkResult,
   GpuComputeKernelId,
   GpuGraphicsKernelId,
@@ -146,6 +147,7 @@ function createVisibilityGuard(abortSignal?: AbortSignal) {
 async function createGpuHarness(
   width: number,
   height: number,
+  adapterPreference: GpuAdapterPreference = "high-performance",
 ): Promise<GpuHarness> {
   const gpuNavigator = navigator as Navigator & { gpu?: GPU };
 
@@ -153,12 +155,14 @@ async function createGpuHarness(
     throw new Error("WebGPU is not available in this browser.");
   }
 
-  const adapter = await gpuNavigator.gpu.requestAdapter({
-    powerPreference: "high-performance",
-  });
+  const adapter = await gpuNavigator.gpu.requestAdapter(
+    adapterPreference === "auto"
+      ? undefined
+      : { powerPreference: adapterPreference },
+  );
 
   if (!adapter) {
-    throw new Error("No high-performance WebGPU adapter was available.");
+    throw new Error("No WebGPU adapter was available for the selected GPU target.");
   }
 
   const adapterTimestampQuerySupported = adapter.features.has("timestamp-query");
@@ -1631,11 +1635,13 @@ export async function runGpuBenchmark({
   onProgress,
   mock = false,
   abortSignal,
+  adapterPreference = "high-performance",
 }: {
   preset?: BenchmarkPreset;
   onProgress?: (update: BenchmarkProgressUpdate) => void;
   mock?: boolean;
   abortSignal?: AbortSignal;
+  adapterPreference?: GpuAdapterPreference;
 }): Promise<GpuBenchmarkResult> {
   const resolvedPreset = resolveBenchmarkPreset(preset);
   const config = getGpuPreset(resolvedPreset);
@@ -1653,7 +1659,11 @@ export async function runGpuBenchmark({
   }
 
   const visibilityGuard = createVisibilityGuard(abortSignal);
-  const harness = await createGpuHarness(config.renderWidth, config.renderHeight);
+  const harness = await createGpuHarness(
+    config.renderWidth,
+    config.renderHeight,
+    adapterPreference,
+  );
   const startedAt = Date.now();
   const totalSteps = 1 + GRAPHICS_ORDER.length + COMPUTE_ORDER.length + 1;
   const graphicsMetrics = {} as Record<GpuGraphicsKernelId, GpuKernelMetric>;

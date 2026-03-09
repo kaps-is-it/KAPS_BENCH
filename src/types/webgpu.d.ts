@@ -92,11 +92,14 @@ interface GPUDevice {
 interface GPUAdapter {
   features: Set<string>;
   info?: GPUAdapterInfo;
+  requestAdapterInfo?(): Promise<GPUAdapterInfo>;
   requestDevice(options?: { requiredFeatures?: string[] }): Promise<GPUDevice>;
 }
 
 interface GPU {
-  requestAdapter(options?: { powerPreference?: string }): Promise<GPUAdapter | null>;
+  requestAdapter(options?: {
+    powerPreference?: "low-power" | "high-performance";
+  }): Promise<GPUAdapter | null>;
   getPreferredCanvasFormat(): GPUTextureFormat;
 }
 
