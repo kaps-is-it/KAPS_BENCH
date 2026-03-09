@@ -304,6 +304,36 @@ function getGpuAdapterPreferenceLabel(preference: GpuAdapterPreference) {
   }
 }
 
+function getGpuTargetSelectOptions(
+  detectedOptions: GpuAdapterSelectionOption[],
+): GpuAdapterSelectionOption[] {
+  const preferenceOrder: GpuAdapterPreference[] = [
+    "high-performance",
+    "low-power",
+    "auto",
+  ];
+
+  return preferenceOrder.map((preference) => {
+    const detected = detectedOptions.find((option) => option.preference === preference);
+
+    if (detected) {
+      return detected;
+    }
+
+    return {
+      preference,
+      label: `${getGpuAdapterPreferenceLabel(preference)} target`,
+      adapterName: `${getGpuAdapterPreferenceLabel(preference)} target`,
+      description:
+        preference === "high-performance"
+          ? "Ask the browser for the high-performance WebGPU adapter."
+          : preference === "low-power"
+            ? "Ask the browser for the low-power WebGPU adapter."
+            : "Let the browser choose the default WebGPU adapter.",
+    };
+  });
+}
+
 function getLiveScoreStatusTone(status: BenchmarkLiveScore["status"]) {
   switch (status) {
     case "live":
@@ -863,11 +893,13 @@ export function BenchmarkExperience({
     benchmarkKind === "gpu" && result?.benchmarkKind === "gpu"
       ? averageAvailableScores(result.graphicsScore, result.computeScore)
       : null;
+  const gpuTargetSelectOptions =
+    benchmarkKind === "gpu" ? getGpuTargetSelectOptions(gpuAdapterOptions) : [];
   const selectedGpuAdapterOption =
     benchmarkKind === "gpu"
-      ? gpuAdapterOptions.find(
+      ? gpuTargetSelectOptions.find(
         (option) => option.preference === selectedGpuAdapterPreference,
-      ) ?? gpuAdapterOptions[0] ?? null
+      ) ?? gpuTargetSelectOptions[0] ?? null
       : null;
   const projectedClass =
     lockedProjection?.projectedClass ?? liveProjection?.projectedClass ?? null;
@@ -1019,11 +1051,13 @@ export function BenchmarkExperience({
       setDeviceProfile(profile);
       setGpuAdapterOptions(adapterOptions);
       setSelectedGpuAdapterPreference((previous) => {
-        if (adapterOptions.some((option) => option.preference === previous)) {
+        const targetOptions = getGpuTargetSelectOptions(adapterOptions);
+
+        if (targetOptions.some((option) => option.preference === previous)) {
           return previous;
         }
 
-        return getDefaultGpuAdapterPreference(adapterOptions);
+        return getDefaultGpuAdapterPreference(targetOptions);
       });
       setProgress(
         18,
@@ -1256,7 +1290,7 @@ export function BenchmarkExperience({
                         <p className="mt-2 text-sm leading-6 text-slate-500">
                           {gpuAdapterOptions.length > 1
                             ? "Choose which browser-exposed WebGPU adapter target to benchmark."
-                            : "The browser chooses the adapter target. If it exposes multiple GPU targets, you can select them here."}
+                            : "Choose the WebGPU target mode to request. Some browsers may still route multiple choices to the same GPU."}
                         </p>
                       </div>
                     </div>
@@ -1272,31 +1306,7 @@ export function BenchmarkExperience({
                         }}
                         className="h-14 w-full rounded-[1.15rem] border border-slate-200 bg-white px-4 text-base font-semibold text-slate-900 shadow-sm outline-none transition focus:border-primary/35 focus:ring-4 focus:ring-primary/10 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
                       >
-                        {(gpuAdapterOptions.length > 0
-                          ? gpuAdapterOptions
-                          : [
-                            {
-                              preference: "high-performance" as const,
-                              label: "High-performance target",
-                              adapterName: "High-performance target",
-                              description:
-                                "Ask the browser for a high-performance WebGPU adapter.",
-                            },
-                            {
-                              preference: "low-power" as const,
-                              label: "Low-power target",
-                              adapterName: "Low-power target",
-                              description:
-                                "Ask the browser for a low-power WebGPU adapter.",
-                            },
-                            {
-                              preference: "auto" as const,
-                              label: "Automatic target",
-                              adapterName: "Automatic target",
-                              description:
-                                "Let the browser choose the default WebGPU adapter.",
-                            },
-                          ]).map((option) => (
+                        {gpuTargetSelectOptions.map((option) => (
                           <option key={option.preference} value={option.preference}>
                             {`${getGpuAdapterPreferenceLabel(option.preference)} • ${option.adapterName}`}
                           </option>
